@@ -96,6 +96,15 @@ class BootReceiver : BroadcastReceiver() {
                 context.startService(serviceIntent)
             }
 
+            // --- Reset LED running states if NOT set to run on boot ---
+            with (sharedPrefs.edit()) {
+                if (!customLedOnBoot) putBoolean("custom_led_is_running", false)
+                if (!rainbowLedOnBoot) putBoolean("rgb_led_is_running", false)
+                if (!powerLedOnBoot) putBoolean("power_led_is_running", false)
+                if (!minFreqOnBoot) putBoolean("min_freq_is_running", false)
+                apply()
+            }
+
             // --- Wireless ADB Boot Logic ---
             if (wirelessAdbOnBoot) {
                 scope.launch {
@@ -168,6 +177,7 @@ class BootReceiver : BroadcastReceiver() {
                             useMountMaster = true
                         )
                         Log.i("BootReceiver", "Hosts file mounted.")
+                        sharedPrefs.edit().putBoolean("root_blocker_is_running", true).apply()
 
                         // Stop VPN kill switch now that root blocker is active
                         val stopIntent = Intent(context, DnsBlockerService::class.java).apply {
