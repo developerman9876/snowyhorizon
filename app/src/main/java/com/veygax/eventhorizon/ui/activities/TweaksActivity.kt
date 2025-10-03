@@ -762,6 +762,26 @@ fun TweaksScreen(
             }
             item {
                 TweakSection(title = "Utilities") {
+                    TweakCard(
+                        title = "Fix Double-Tap Passthrough",
+                        description = "Applies fix for broken Double-Tap Passthrough feature."
+                    ) {
+                        var isRooted by remember { mutableStateOf(false) }
+                        LaunchedEffect(Unit) {
+                            isRooted = RootUtils.isRootAvailable()
+                        }
+
+                        Button(
+                            onClick = {
+                                coroutineScope.launch {
+                                    RootUtils.runAsRoot(TweakCommands.FIX_PASSTHROUGH)
+                                }
+                            },
+                            enabled = isRooted
+                        ) {
+                            Text("Apply")
+                        }
+                    }
                     if (!isRooted) {
                         TweakCard("Internet Kill Switch", "Blocks internet access on boot (No Root). This will also trigger the Domain Blocker after the reboot (Root).") {
                             Column(modifier = Modifier.width(IntrinsicSize.Max)) {
@@ -923,7 +943,7 @@ fun TweaksScreen(
                             enabled = isRooted
                         )
                     }
-                    TweakCard("System Hang Fix", "Turns Wi-Fi off and on during boot to prevent the system from handing in certain conditions") {
+                    TweakCard("System Hang Fix", "Turns Wi-Fi off and on during boot to prevent the system from hanging in certain conditions") {
                         Switch(
                             checked = cycleWifiOnBoot,
                             onCheckedChange = { isEnabled ->
