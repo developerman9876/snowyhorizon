@@ -625,7 +625,11 @@ fun UpdateDialog(
                     contentColor = MaterialTheme.colorScheme.onPrimary
                 )
             ) {
-                Text(if (statusText.contains("failed", ignoreCase = true)) "Close" else "Later")
+                Text(
+                    if (statusText.contains("failed", ignoreCase = true) ||
+                        statusText.contains("Prompting system installer…", ignoreCase = true)
+                    ) "Close" else "Later"
+                )
             }
         }
     )

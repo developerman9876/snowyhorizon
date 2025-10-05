@@ -1,7 +1,11 @@
 package com.veygax.eventhorizon.core
 
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import android.util.Log
+import android.os.Environment
+import androidx.core.content.FileProvider
 import com.veygax.eventhorizon.utils.RootUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -100,59 +104,89 @@ object UpdateManager {
     /**
      * Downloads an APK from a URL and installs it using root.
      */
-    suspend fun downloadAndInstallUpdate(
-        context: Context,
-        url: String,
-        onProgress: (Float) -> Unit,
-        onStatusUpdate: (String) -> Unit
-    ) {
-        withContext(Dispatchers.IO) {
-            var connection: HttpURLConnection? = null
-            // **FIX:** Declare apkFile here, in the outer scope.
-            val apkFile = File(context.cacheDir, "update.apk")
-            try {
-                onStatusUpdate("Starting download...")
-                onProgress(0f)
+	suspend fun downloadAndInstallUpdate(
+		context: Context,
+		url: String,
+		onProgress: (Float) -> Unit,
+		onStatusUpdate: (String) -> Unit
+	) {
+		withContext(Dispatchers.IO) {
+			var connection: HttpURLConnection? = null
+			val apkFile = File(context.cacheDir, "update.apk")
+	
+			try {
+				onStatusUpdate("Starting download…")
+				onProgress(0f)
+	
+				connection = URL(url).openConnection() as HttpURLConnection
+				connection.connectTimeout = TIMEOUT_MS
+				connection.readTimeout = TIMEOUT_MS
+				connection.connect()
+	
+				val fileLength = connection.contentLength
+	
+				connection.inputStream.use { input ->
+					FileOutputStream(apkFile).use { output ->
+						val data = ByteArray(4096)
+						var total: Long = 0
+						var count: Int
+						while (input.read(data).also { count = it } != -1) {
+							total += count
+							if (fileLength > 0) {
+								val progress = total.toFloat() / fileLength
+								withContext(Dispatchers.Main) { onProgress(progress) }
+							}
+							output.write(data, 0, count)
+						}
+					}
+				}
+	
+				onStatusUpdate("Download complete. Installing…")
+				onProgress(1f)
+	
+				if (RootUtils.isRootAvailable()) {
+					// Silent install for rooted devices
+					val result = RootUtils.runAsRoot("pm install -r \"${apkFile.absolutePath}\"")
+					apkFile.delete()
+					if (result.trim() != "Success") {
+						onStatusUpdate("Installation failed (root). See logs for details.")
+						Log.e("UpdateManager", "Install failed: $result")
+					}
+					} else {
+					    val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+					    if (!downloadsDir.exists()) downloadsDir.mkdirs()
+					    val outFile = File(downloadsDir, "eventhorizon-update.apk")
 
-                connection = URL(url).openConnection() as HttpURLConnection
-                connection.connectTimeout = TIMEOUT_MS
-                connection.readTimeout = TIMEOUT_MS
-                connection.connect()
+					    if (outFile.exists()) outFile.delete()
+					    apkFile.copyTo(outFile, overwrite = true)
 
-                val fileLength = connection.contentLength
+					    // Wrap it in FileProvider (like MiXplorer’s content://)
+					    val apkUri = FileProvider.getUriForFile(
+					        context,
+ 					       "${context.packageName}.provider",
+					        outFile
+					    )
 
-                connection.inputStream.use { input ->
-                    FileOutputStream(apkFile).use { output ->
-                        val data = ByteArray(4096)
-                        var total: Long = 0
-                        var count: Int
-                        while (input.read(data).also { count = it } != -1) {
-                            total += count
-                            if (fileLength > 0) {
-                                val progress = total.toFloat() / fileLength
-                                withContext(Dispatchers.Main) { onProgress(progress) }
-                            }
-                            output.write(data, 0, count)
-                        }
-                    }
-                }
+					    val installIntent = Intent(Intent.ACTION_VIEW).apply {
+					        setDataAndType(apkUri, "application/vnd.android.package-archive")
+					        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+					        // Force system package installer instead of VR Resolver
+					        setClassName(
+					            "com.android.packageinstaller",
+					            "com.android.packageinstaller.InstallStart"
+					        )
+					    }
 
-                onStatusUpdate("Download complete. Installing...")
-                onProgress(1f)
-
-                val result = RootUtils.runAsRoot("pm install -r \"${apkFile.absolutePath}\"")
-                apkFile.delete()
-
-                if (result.trim() != "Success") {
-                    onStatusUpdate("Installation failed. See logs for details.")
-                    Log.e("UpdateManager", "Install failed: $result")
-                }
-            } catch (e: Exception) {
-                onStatusUpdate("An error occurred: ${e.message}")
-                Log.e("UpdateManager", "Download/Install error", e)
-            } finally {
-                connection?.disconnect()
-            }
-        }
-    }
+					    context.startActivity(installIntent)
+					    onStatusUpdate("Prompting system installer…")
+					}
+	
+			} catch (e: Exception) {
+				onStatusUpdate("An error occurred: ${e.message}")
+				Log.e("UpdateManager", "Download/Install error", e)
+			} finally {
+				connection?.disconnect()
+			}
+		}
+	}
 }
