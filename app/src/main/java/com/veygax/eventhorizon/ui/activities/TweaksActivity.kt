@@ -674,7 +674,7 @@ fun TweaksScreen(
         ) {
             item {
                 TweakSection(title = "LED Tweaks") {
-                    TweakCard("Rainbow LED", "Cycles notification LED through colors.") {
+                    TweakCard("Rainbow LED", "Cycles notification LED through colors") {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(8.dp) // Reduced space
@@ -728,7 +728,7 @@ fun TweaksScreen(
                             }
                         }
                     }
-                    TweakCard("Power Indicator LED", "Shows battery level with the LED color.") {
+                    TweakCard("Power Indicator LED", "Shows battery level with the LED color") {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(8.dp) // Reduced space
@@ -782,7 +782,7 @@ fun TweaksScreen(
                             }
                         }
                     }
-                    TweakCard("Custom LED Color", "Set a static color for the LED.") {
+                    TweakCard("Custom LED Color", "Set a static color for the LED") {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(8.dp) // Reduced space
@@ -843,7 +843,7 @@ fun TweaksScreen(
                 TweakSection(title = "Utilities") {
                     TweakCard(
                         title = "Fix Double-Tap Passthrough",
-                        description = "Applies fix for broken Double-Tap Passthrough feature."
+                        description = "Applies fix for broken Double-Tap Passthrough feature"
                     ) {
                         var isRooted by remember { mutableStateOf(false) }
                         LaunchedEffect(Unit) {
@@ -932,14 +932,14 @@ fun TweaksScreen(
                                                     isRootBlockerManuallyEnabled = isSuccess
                                                     sharedPrefs.edit().putBoolean("root_blocker_is_running", isSuccess).apply()
                                                     if (isSuccess) {
-                                                        snackbarHostState.showSnackbar("Root domain blocker enabled!")
+                                                        snackbarHostState.showSnackbar("Root domain blocker enabled")
                                                     } else {
-                                                        snackbarHostState.showSnackbar("Error: Root domain blocker failed to enable.")
+                                                        snackbarHostState.showSnackbar("Root domain blocker failed to enable")
                                                     }
                                                 } else {
                                                     activity.disableRootBlocker()
                                                     sharedPrefs.edit().putBoolean("root_blocker_is_running", false).apply()
-                                                    snackbarHostState.showSnackbar("Root blocker disabled. DNS cache flushed.")
+                                                    snackbarHostState.showSnackbar("Root blocker disabled")
                                                 }
                                             }
                                         },
@@ -951,7 +951,7 @@ fun TweaksScreen(
                     }
                     TweakCard(
                         title = "Wireless ADB",
-                        description = "Enables connecting to ADB over Wi-Fi.",
+                        description = "Enables connecting to ADB over Wi-Fi",
                         extraContent = {
                             if (isWirelessAdbEnabled) {
                                 Text(
@@ -993,7 +993,7 @@ fun TweaksScreen(
                                             RootUtils.runAsRoot("setprop service.adb.tcp.port $port")
                                             RootUtils.runAsRoot("stop adbd && start adbd")
                                             withContext(Dispatchers.Main) {
-                                                snackbarHostState.showSnackbar(if (isEnabled) "Wireless ADB Enabled." else "Wireless ADB Disabled.")
+                                                snackbarHostState.showSnackbar(if (isEnabled) "Wireless ADB Enabled" else "Wireless ADB Disabled")
                                             }
                                         }
                                     },
@@ -1002,7 +1002,7 @@ fun TweaksScreen(
                             }
                         }
                     }
-                    TweakCard("Intercept App Launching", "Stops Horizon Feed and Social Connections from being started.") {
+                    TweakCard("Intercept App Launching", "Stops Horizon Feed and Social Connections from being started") {
                         Switch(
                             checked = isInterceptorEnabled,
                             onCheckedChange = { isEnabled ->
@@ -1015,7 +1015,7 @@ fun TweaksScreen(
                                         activity.startTweakServiceAction(TweakService.ACTION_STOP_INTERCEPTOR)
                                     }
                                     withContext(Dispatchers.Main) {
-                                        snackbarHostState.showSnackbar(if (isEnabled) "App Interceptor Enabled." else "App Interceptor Disabled.")
+                                        snackbarHostState.showSnackbar(if (isEnabled) "App Interceptor Enabled" else "App Interceptor Disabled")
                                     }
                                 }
                             },
@@ -1035,7 +1035,7 @@ fun TweaksScreen(
                     }
                     TweakCard(
                         title = "USB Notification Interceptor",
-                        description = "Listens for the Oculus MTP notification and turns on MTP mode."
+                        description = "Listens for the Oculus MTP notification and turns on MTP mode"
                     ) {
                         Switch(
                             checked = usbInterceptorEnabled.value,
@@ -1045,10 +1045,10 @@ fun TweaksScreen(
                                 coroutineScope.launch(Dispatchers.IO) {
                                     if (isEnabled) {
                                         activity.startTweakServiceAction(TweakService.ACTION_START_USB_INTERCEPTOR)
-                                        snackbarHostState.showSnackbar("USB Interceptor Enabled.")
+                                        snackbarHostState.showSnackbar("USB Interceptor Enabled")
                                     } else {
                                         activity.startTweakServiceAction(TweakService.ACTION_STOP_USB_INTERCEPTOR)
-                                        snackbarHostState.showSnackbar("USB Interceptor Disabled.")
+                                        snackbarHostState.showSnackbar("USB Interceptor Disabled")
                                     }
                                 }
                             },
@@ -1056,8 +1056,8 @@ fun TweaksScreen(
                         )
                     }
                     TweakCard(
-                        title = "Disable Proximity Sensor Auto-Wake",
-                        description = "Prevents the headset from waking automatically"
+                        title = "Disable Proximity Sensor",
+                        description = "Prevents the headset from waking or sleeping automatically"
                     ) {
                         Column(modifier = Modifier.width(IntrinsicSize.Max)) {
                             Column(
@@ -1079,8 +1079,8 @@ fun TweaksScreen(
 
                                             withContext(Dispatchers.Main) {
                                                 snackbarHostState.showSnackbar(
-                                                    if (isEnabled) "Proximity Sensor Auto-Wake Disabled"
-                                                    else "Proximity Sensor Auto-Wake Restored"
+                                                    if (isEnabled) "Proximity Sensor Disabled"
+                                                    else "Proximity Sensor Restored"
                                                 )
                                             }
                                         }
@@ -1124,7 +1124,7 @@ fun TweaksScreen(
                             }
                         }
                     }
-                    TweakCard("Spoof Build Type", "Spoofs build type. Userdebug can enable features such as Dogfood or ShellDebug. This will restart your device.") {
+                    TweakCard("Spoof Build Type", "Spoofs build type. Userdebug can enable features such as Dogfood or ShellDebug. This will restart your device") {
                         val runSpoof: (String) -> Unit = { type ->
                             coroutineScope.launch(Dispatchers.IO) {
                                 RootUtils.runAsRoot("magisk resetprop ro.build.type $type")
@@ -1207,14 +1207,14 @@ fun TweaksScreen(
                                     val command = if (isEnabled) TweakCommands.DISABLE_TELEPORT_LIMIT else TweakCommands.ENABLE_TELEPORT_LIMIT
                                     RootUtils.runAsRoot(command)
                                     withContext(Dispatchers.Main) {
-                                        snackbarHostState.showSnackbar(if (isEnabled) "Teleport Anywhere Enabled." else "Teleport Anywhere Disabled.")
+                                        snackbarHostState.showSnackbar(if (isEnabled) "Teleport Anywhere Enabled" else "Teleport Anywhere Disabled")
                                     }
                                 }
                             },
                             enabled = isRooted
                         )
                     }
-                    TweakCard("Navigator Fog", "Enables the fog effect in the navigator background.") {
+                    TweakCard("Navigator Fog", "Enables the fog effect in the navigator background") {
                         Switch(
                             checked = isNavigatorFogEnabled,
                             onCheckedChange = { isEnabled ->
@@ -1228,7 +1228,7 @@ fun TweaksScreen(
                             enabled = isRooted
                         )
                     }
-                    TweakCard("Fixed Panel Scaling", "Makes panels change size with distance.") {
+                    TweakCard("Fixed Panel Scaling", "Makes panels change size with distance") {
                         Switch(
                             checked = isPanelScalingEnabled,
                             onCheckedChange = { isEnabled ->
@@ -1358,7 +1358,7 @@ fun TweaksScreen(
                             }
                         }
                     }
-                    TweakCard("CPU Governor", "Switches the CPU governor between schedutil and performance.") {
+                    TweakCard("CPU Governor", "Switches the CPU governor between schedutil and performance") {
                         Column(horizontalAlignment = Alignment.End) {
                             Text(if (isCpuPerfMode) "Performance" else "Schedutil", style = MaterialTheme.typography.bodyMedium)
                             Switch(
@@ -1376,7 +1376,7 @@ fun TweaksScreen(
                                         }
                                         RootUtils.runAsRoot(command)
                                         withContext(Dispatchers.Main) {
-                                            snackbarHostState.showSnackbar("CPU Governor set to $governor.")
+                                            snackbarHostState.showSnackbar("CPU Governor set to $governor")
                                         }
                                     }
                                 },
