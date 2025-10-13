@@ -32,6 +32,7 @@ class BootReceiver : BroadcastReceiver() {
             val usbInterceptorOnBoot = sharedPrefs.getBoolean("usb_interceptor_on_boot", false)
             val proxSensorDisabled = sharedPrefs.getBoolean("prox_sensor_disabled", false)
             val isLockUpdateFoldersActive = sharedPrefs.getBoolean("lock_update_folders_is_locked", false)
+            val passthroughFixOnBoot = sharedPrefs.getBoolean("passthrough_fix_on_boot", false)
             val scope = CoroutineScope(Dispatchers.IO)
 
             // --- Activity Boot Logic ---
@@ -224,6 +225,28 @@ class BootReceiver : BroadcastReceiver() {
                 }
             }
             
+            // --- Passthrough Fix on Boot Logic ---
+            if (passthroughFixOnBoot) {
+                scope.launch {
+                    delay(5000) // let system settle a bit
+                    if (RootUtils.isRootAvailable()) {
+                        RootUtils.runAsRoot("am force-stop com.oculus.systemdriver", useMountMaster = true)
+                        delay(5000)
+                        RootUtils.runAsRoot("am start -n com.veygax.eventhorizon/.ui.activities.MainActivity", useMountMaster = true)
+                        sharedPrefs.edit().putBoolean("passthrough_fix_on_boot", true).apply()
+
+                        val appToLaunch = sharedPrefs.getString("start_app_on_boot", null)
+                        if (!appToLaunch.isNullOrEmpty()) {
+                            val appIntent = context.packageManager.getLaunchIntentForPackage(appToLaunch)
+                            if (appIntent != null) {
+                                appIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                context.startActivity(appIntent)
+                            }
+                        }
+                    }
+                }
+            }
+
             // --- Start App on Boot Logic ---
             val Startapp = sharedPrefs.getString("start_app_on_boot", null)
             if (!Startapp.isNullOrBlank()) {

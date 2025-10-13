@@ -7,7 +7,9 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
@@ -72,6 +74,7 @@ class TweakService : Service() {
         const val ACTION_STOP_POWER_LED = "com.veygax.eventhorizon.STOP_POWER_LED"
         const val ACTION_START_MIN_FREQ = "com.veygax.eventhorizon.START_MIN_FREQ"
         const val ACTION_STOP_MIN_FREQ = "com.veygax.eventhorizon.STOP_MIN_FREQ"
+        const val ACTION_APPLY_PASSTHROUGH_FIX = "ACTION_APPLY_PASSTHROUGH_FIX"
         const val ACTION_START_INTERCEPTOR = "com.veygax.eventhorizon.START_INTERCEPTOR"
         const val ACTION_STOP_INTERCEPTOR = "com.veygax.eventhorizon.STOP_INTERCEPTOR"
         
@@ -182,6 +185,9 @@ class TweakService : Service() {
                 ACTION_STOP_MIN_FREQ -> {
                     stopMinFreq()
                     sharedPrefs.edit().putBoolean("min_freq_is_running", false).apply()
+                }
+                ACTION_APPLY_PASSTHROUGH_FIX -> {
+                    applyPassthroughFix()
                 }
                 ACTION_START_INTERCEPTOR -> startInterceptor() 
                 ACTION_STOP_INTERCEPTOR -> stopInterceptor() 
@@ -296,6 +302,40 @@ class TweakService : Service() {
     private suspend fun stopMinFreq() {
         RootUtils.runAsRoot("pkill -f ${CpuUtils.SCRIPT_NAME} || true")
         isMinFreqRunning = false
+    }
+
+    private fun applyPassthroughFix() {
+        serviceScope.launch {
+            if (RootUtils.isRootAvailable()) {
+                val fixCommand = """
+                    am force-stop com.oculus.guardian
+					am force-stop com.oculus.vrshell
+                    sleep 5
+                    am start -n com.veygax.eventhorizon/.ui.activities.MainActivity
+                """.trimIndent()
+
+                RootUtils.runAsRoot(fixCommand, useMountMaster = true)
+                val prefs = getSharedPreferences("eventhorizon_prefs", Context.MODE_PRIVATE)
+                val passthroughFixOnBoot = prefs.getBoolean("passthrough_fix_on_boot", false)
+                val appToLaunch = prefs.getString("start_app_on_boot", null)
+
+                if (passthroughFixOnBoot && !appToLaunch.isNullOrEmpty()) {
+                    val ehIntent = packageManager.getLaunchIntentForPackage("com.veygax.eventhorizon")
+                    ehIntent?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    if (ehIntent != null) startActivity(ehIntent)
+
+                    try {
+                        val appIntent = packageManager.getLaunchIntentForPackage(appToLaunch)
+                        if (appIntent != null) {
+                            appIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            startActivity(appIntent)
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to launch $appToLaunch", e)
+                    }
+                }
+            }
+        }
     }
     
     private suspend fun startInterceptor() {

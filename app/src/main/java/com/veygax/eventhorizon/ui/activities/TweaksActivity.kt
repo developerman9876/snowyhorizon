@@ -321,7 +321,6 @@ class TweaksActivity : ComponentActivity() {
         return false
     }
 
-    // === Lock/Unlock Update Folder Functions ===
     private fun isPathLocked(rootOutput: String, path: String, lockSignature: String): Boolean {
         val lines = rootOutput.split('\n')
         val relevantLine = lines.firstOrNull { it.contains(path) }
@@ -458,7 +457,11 @@ fun TweaksScreen(
     var proxSensorOnBoot by rememberSaveable { mutableStateOf(getInitialState("prox_sensor_on_boot")) }
     var isProxSensorDisabled by remember { mutableStateOf(initialProxSensorDisabledState) }
 
-    // --- Lock Update Folders
+    // Passthrough Fix
+    val initialPassthroughFixOnBoot = getInitialState("passthrough_fix_on_boot")
+    var passthroughFixOnBoot by rememberSaveable { mutableStateOf(initialPassthroughFixOnBoot) }
+
+    // Lock Update Folders
     val initialLockUpdateFolders = sharedPrefs.getBoolean("lock_update_folders", false)
     var lockUpdateFoldersOnBoot by rememberSaveable { mutableStateOf(initialLockUpdateFolders) }
     var isLockUpdateFoldersActive by remember { mutableStateOf(sharedPrefs.getBoolean("lock_update_folders_is_locked", false)) }
@@ -842,23 +845,37 @@ fun TweaksScreen(
             item {
                 TweakSection(title = "Utilities") {
                     TweakCard(
-                        title = "Fix Double-Tap Passthrough",
+                        title = "Double-Tap Fix",
                         description = "Applies fix for broken Double-Tap Passthrough feature"
                     ) {
-                        var isRooted by remember { mutableStateOf(false) }
-                        LaunchedEffect(Unit) {
-                            isRooted = RootUtils.isRootAvailable()
-                        }
-
-                        Button(
-                            onClick = {
-                                coroutineScope.launch {
-                                    RootUtils.runAsRoot(TweakCommands.FIX_PASSTHROUGH)
-                                }
-                            },
-                            enabled = isRooted
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Text("Apply")
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text("Run on Boot", style = MaterialTheme.typography.bodyMedium)
+                                Switch(
+                                    checked = passthroughFixOnBoot,
+                                    onCheckedChange = { checked ->
+                                        passthroughFixOnBoot = checked
+                                        sharedPrefs.edit().putBoolean("passthrough_fix_on_boot", checked).apply()
+                                        coroutineScope.launch { snackbarHostState.showSnackbar(if (checked) "Passthrough Fix on Boot Enabled" else "Passthrough Fix on Boot Disabled") }
+                                    },
+                                    enabled = isRooted
+                                )
+                            }
+                            Button(
+                                onClick = {
+                                    val passthroughFixIntent = Intent(context, TweakService::class.java).apply {
+                                        action = TweakService.ACTION_APPLY_PASSTHROUGH_FIX
+                                    }
+                                    context.startService(passthroughFixIntent)
+                                },
+                                enabled = isRooted,
+                                modifier = Modifier.width(90.dp)
+                            ) {
+                                Text("Apply")
+                            }
                         }
                     }
                     if (!isRooted) {
@@ -1449,18 +1466,18 @@ fun TweakCard(
 object TweakCommands {
     const val LEDS_OFF = "echo 0 > /sys/class/leds/red/brightness\necho 0 > /sys/class/leds/green/brightness\necho 0 > /sys/class/leds/blue/brightness"
     val RGB_SCRIPT = """
-#!/system/bin/sh
-RED_LED="/sys/class/leds/red/brightness"
-GREEN_LED="/sys/class/leds/green/brightness"
-BLUE_LED="/sys/class/leds/blue/brightness"
-set_rgb() { echo "${'$'}{1}" > "${'$'}RED_LED"; echo "${'$'}{2}" > "${'$'}GREEN_LED"; echo "${'$'}{3}" > "${'$'}BLUE_LED"; }
-clamp() { if [ "${'$'}1" -lt 0 ]; then echo 0; elif [ "${'$'}1" -gt 255 ]; then echo 255; else echo "${'$'}1"; fi; }
-trap "set_rgb 0 0 0; exit" INT TERM
-while true; do
-    for i in ${'$'}(seq 0 5 255); do set_rgb ${'$'}(clamp ${'$'}((255 - i))) ${'$'}(clamp ${'$'}{i}) 0; sleep 0.005; done
-    for i in ${'$'}(seq 0 5 255); do set_rgb 0 ${'$'}(clamp ${'$'}((255 - i))) ${'$'}(clamp ${'$'}{i}); sleep 0.005; done
-    for i in ${'$'}(seq 0 5 255); do set_rgb ${'$'}(clamp ${'$'}{i}) 0 ${'$'}(clamp ${'$'}((255 - i))); sleep 0.005; done
-done
+        #!/system/bin/sh
+        RED_LED="/sys/class/leds/red/brightness"
+        GREEN_LED="/sys/class/leds/green/brightness"
+        BLUE_LED="/sys/class/leds/blue/brightness"
+        set_rgb() { echo "${'$'}{1}" > "${'$'}RED_LED"; echo "${'$'}{2}" > "${'$'}GREEN_LED"; echo "${'$'}{3}" > "${'$'}BLUE_LED"; }
+        clamp() { if [ "${'$'}1" -lt 0 ]; then echo 0; elif [ "${'$'}1" -gt 255 ]; then echo 255; else echo "${'$'}1"; fi; }
+        trap "set_rgb 0 0 0; exit" INT TERM
+        while true; do
+            for i in ${'$'}(seq 0 5 255); do set_rgb ${'$'}(clamp ${'$'}((255 - i))) ${'$'}(clamp ${'$'}{i}) 0; sleep 0.005; done
+            for i in ${'$'}(seq 0 5 255); do set_rgb 0 ${'$'}(clamp ${'$'}((255 - i))) ${'$'}(clamp ${'$'}{i}); sleep 0.005; done
+            for i in ${'$'}(seq 0 5 255); do set_rgb ${'$'}(clamp ${'$'}{i}) 0 ${'$'}(clamp ${'$'}((255 - i))); sleep 0.005; done
+        done
     """.trimIndent()
 
     val POWER_LED_SCRIPT = """
@@ -1505,7 +1522,7 @@ done
             fi
             sleep 5
         done
-        """.trimIndent()
+    """.trimIndent()
 
     const val DISABLE_TELEPORT_LIMIT = "oculuspreferences --setc shell_teleport_anywhere true"
     const val ENABLE_TELEPORT_LIMIT = "oculuspreferences --setc shell_teleport_anywhere false"
@@ -1519,17 +1536,6 @@ done
     const val SET_TRANSITION_VOID = "oculuspreferences --setc shell_immersive_transitions_enabled false\nam force-stop com.oculus.vrshell"
     const val ENABLE_INFINITE_PANELS = "oculuspreferences --setc debug_infinite_spatial_panels_enabled true\nam force-stop com.oculus.vrshell"
     const val DISABLE_INFINITE_PANELS = "oculuspreferences --setc debug_infinite_spatial_panels_enabled false\nam force-stop com.oculus.vrshell"
-
-    // Command to fix the double-tap passthrough feature. Wifi toggle is handled by the wrapper function.
-    val FIX_PASSTHROUGH = """
-    PIDS=${'$'}(dumpsys sensorservice | grep -o "unknown_package_pid_[0-9]*" | sed 's/unknown_package_pid_//' | sort -u)
-      for pid in ${'$'}PIDS; do
-        kill ${'$'}pid
-      done
-    am force-stop com.oculus.vrshell
-    am startservice com.oculus.guardian/com.oculus.vrguardianservice.VrGuardianService
-    am start -n com.veygax.eventhorizon/.ui.activities.MainActivity
-    """.trimIndent()
 }
 
 @Preview(showBackground = true)
