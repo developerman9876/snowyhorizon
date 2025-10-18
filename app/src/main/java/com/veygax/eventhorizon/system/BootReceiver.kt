@@ -8,6 +8,7 @@ import com.veygax.eventhorizon.system.DnsBlockerService
 import com.veygax.eventhorizon.ui.activities.MainActivity
 import com.veygax.eventhorizon.utils.CpuUtils
 import com.veygax.eventhorizon.utils.RootUtils
+import com.veygax.eventhorizon.ui.activities.TweakCommands
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -33,6 +34,7 @@ class BootReceiver : BroadcastReceiver() {
             val proxSensorDisabled = sharedPrefs.getBoolean("prox_sensor_disabled", false)
             val isLockUpdateFoldersActive = sharedPrefs.getBoolean("lock_update_folders_is_locked", false)
             val passthroughFixOnBoot = sharedPrefs.getBoolean("passthrough_fix_on_boot", false)
+            val telemetryDisabledOnBoot = sharedPrefs.getBoolean(TweakCommands.TELEMETRY_TOGGLE_KEY, false)
             val scope = CoroutineScope(Dispatchers.IO)
 
             // --- Activity Boot Logic ---
@@ -224,7 +226,35 @@ class BootReceiver : BroadcastReceiver() {
                     }
                 }
             }
-            
+
+            // --- Telemetry Disable on Boot Logic ---
+            suspend fun copyTelemetryBinaryFromAssets(context: Context) = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    val assetPath = "telemetry/telemetry"
+                    val tempFile = File(context.cacheDir, "telemetry_temp")
+                    context.assets.open(assetPath).use { input ->
+                        tempFile.outputStream().use { output ->
+                            input.copyTo(output)
+                        }
+                    }
+
+                    val moduleDir = "/data/adb/eventhorizon"
+                    val finalBinaryPath = "$moduleDir/telemetry"
+                    val commands = """
+                        mkdir -p $moduleDir
+                        mv ${tempFile.absolutePath} $finalBinaryPath
+                        chmod 755 $finalBinaryPath
+                    """.trimIndent()
+                    RootUtils.runAsRoot(commands, useMountMaster = true)
+            }
+            if (telemetryDisabledOnBoot) {
+                scope.launch(Dispatchers.IO) {
+                    if (RootUtils.isRootAvailable()) {
+                        copyTelemetryBinaryFromAssets(context)
+                        RootUtils.runAsRoot(TweakCommands.ENABLE_TELEMETRY_DISABLE, useMountMaster = true)
+                    }
+                }
+            }
+
             // --- Passthrough Fix on Boot Logic ---
             if (passthroughFixOnBoot) {
                 scope.launch {
