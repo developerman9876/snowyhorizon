@@ -35,8 +35,10 @@ import kotlinx.coroutines.launch
 import android.util.Log
 import android.graphics.drawable.Drawable
 import android.widget.ImageView
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.compose.foundation.Image
 
 // --- Data class to organize app information ---
 data class AppInfo(
@@ -74,7 +76,7 @@ class AppsActivity : ComponentActivity() {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun AppsScreen() {
     val coroutineScope = rememberCoroutineScope()
@@ -138,12 +140,11 @@ fun AppsScreen() {
     val appStates = remember {
         mutableStateMapOf<String, Pair<String, Boolean>>().apply {
             appList.forEach { app ->
-                this[app.packageName] = Pair("Ready", false) // Status and IsInstalling flag
+                this[app.packageName] = Pair("Ready", false)
             }
         }
     }
 
-    // --- Activity Result Launcher for File Picker ---
     val apkPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
@@ -160,7 +161,7 @@ fun AppsScreen() {
                 }
             }
         }
-        selectedAppToInstall = null // Reset state
+        selectedAppToInstall = null
     }
 
     // State for Dogfood Hub feature
@@ -180,7 +181,6 @@ fun AppsScreen() {
         }
     }
 
-    // --- Dialogs ---
     if (showRestartDialog) {
         AlertDialog(
             onDismissRequest = { showRestartDialog = false },
@@ -214,111 +214,148 @@ fun AppsScreen() {
             )
         }
     ) { innerPadding ->
-        LazyColumn(
+        val tabTitles = listOf("Launch", "Install")
+        val initialAppPage = sharedPrefs.getInt("last_app_tab", 0)
+        val pagerState = rememberPagerState(
+            initialPage = initialAppPage,
+            pageCount = { tabTitles.size }
+        )
+
+        LaunchedEffect(pagerState.currentPage) {
+            sharedPrefs.edit().putInt("last_app_tab", pagerState.currentPage).apply()
+        }
+
+        Column(
             modifier = Modifier
                 .padding(innerPadding)
-                .padding(horizontal = 16.dp),
-            contentPadding = PaddingValues(vertical = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+                .fillMaxSize()
         ) {
-            item {
-                AppSection(title = "Launch apps") {
-                    // --- Dogfood Hub Card ---
-                    AppCard("Dogfood Hub", "Enables the hidden Dogfood Hub for experimental features") {
-                        Column(horizontalAlignment = Alignment.End) {
-                            Switch(checked = isDogfoodEnabled, onCheckedChange = { isEnabled ->
-                                restartDialogContent = if (isEnabled) {
-                                    Pair("This will restart your device's interface. After it reloads, please open this app again to complete the second step automatically.") {
-                                        coroutineScope.launch {
-                                            sharedPrefs.edit().putBoolean("dogfood_pending_step2", true).apply()
-                                            RootUtils.runAsRoot(LaunchCommands.ENABLE_DOGFOOD_STEP_1)
-                                        }
-                                    }
-                                } else {
-                                    Pair("This will disable the Dogfood Hub and restart your device's interface") {
-                                        coroutineScope.launch { RootUtils.runAsRoot(LaunchCommands.DISABLE_DOGFOOD_HUB) }
-                                    }
-                                }
-                                showRestartDialog = true
-                            })
-                            Spacer(Modifier.height(8.dp))
-                            Button(
-                                onClick = { coroutineScope.launch { RootUtils.runAsRoot(LaunchCommands.LAUNCH_DOGFOOD_HUB) } },
-                                enabled = isDogfoodEnabled
-                            ) { Text("Launch") }
-                        }
-                    }
-                    AppCard("Android Settings", "Launches the Android settings app") {
-                        Button(onClick = {
-                            coroutineScope.launch { RootUtils.runAsRoot(LaunchCommands.LAUNCH_ANDROID_SETTINGS) }
-                        }) { Text("Launch") }
-                    }
-                    AppCard("Android File Manager", "Launches the Android file manager") {
-                        Button(onClick = {
-                            coroutineScope.launch { RootUtils.runAsRoot(LaunchCommands.LAUNCH_FILE_MANAGER) }
-                        }) { Text("Launch") }
-                    }
-
-                    // NEW App Card for Start App on Boot
-                    AppCard("Start App on Boot",
-                        "Select an app to automatically launch on boot\nCurrent: ${if (appToLaunchOnBoot.isNullOrBlank()) "None" else appToLaunchOnBoot}") {
-                        Row {
-                            val isAppSelected = !appToLaunchOnBoot.isNullOrBlank()
-                            val buttonText = if (isAppSelected) "Clear" else "Select"
-
-                            Button(
-                                onClick = {
-                                    if (isAppSelected) {
-                                        saveAppToLaunchOnBoot(null)
-                                    } else {
-                                        showSideloadedAppDialog = true
-                                    }
-                                },
-                            ) {
-                                Text(buttonText)
+            PrimaryTabRow(selectedTabIndex = pagerState.currentPage) {
+                tabTitles.forEachIndexed { index, title ->
+                    Tab(
+                        selected = pagerState.currentPage == index,
+                        onClick = {
+                            coroutineScope.launch {
+                                pagerState.animateScrollToPage(index)
                             }
-                        }
-                    }
+                        },
+                        text = { Text(title) }
+                    )
                 }
             }
 
-            item {
-                AppSection(title = "Install Apps") {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        appList.forEach { app ->
-                            val status = appStates[app.packageName]?.first ?: "Ready"
-                            val isInstalling = appStates[app.packageName]?.second ?: false
-                            AppCard(
-                                title = app.title,
-                                description = app.description,
-                                status = status
-                            ) {
-                                val buttonText = when {
-                                    isInstalling -> "Processing..."
-                                    app.type == AppInstallType.MANUAL_LINK -> "Open Link"
-                                    app.type == AppInstallType.FILE_PICKER -> "Select" // New button text
-                                    else -> "Install"
-                                }
-                                Button(
-                                    onClick = {
-                                        if (app.type == AppInstallType.FILE_PICKER) {
-                                            selectedAppToInstall = app
-                                            // The built-in Android file manager intent for picking files
-                                            apkPickerLauncher.launch("*/*") // MIME type for all files, hoping Android suggests file manager
-                                        } else {
-                                            // Existing installation logic
-                                            appStates[app.packageName] = Pair("Starting...", true)
-                                            coroutineScope.launch {
-                                                app.installAction(context, { newStatus ->
-                                                    appStates[app.packageName] = Pair(newStatus, true)
-                                                }, null) // Pass null for Uri
-                                                appStates[app.packageName] = Pair(appStates[app.packageName]?.first ?: "Done", false)
+            HorizontalPager(
+                state = pagerState,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+            ) { page ->
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 12.dp),
+                    contentPadding = PaddingValues(vertical = 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    when (page) {
+                        0 -> {
+                            item {
+                                AppCard("Dogfood Hub", "Enables the hidden Dogfood Hub for experimental features") {
+                                    Column(horizontalAlignment = Alignment.End) {
+                                        Switch(checked = isDogfoodEnabled, onCheckedChange = { isEnabled ->
+                                            restartDialogContent = if (isEnabled) {
+                                                Pair("This will restart your device's interface. After it reloads, please open this app again to complete the second step automatically.") {
+                                                    coroutineScope.launch {
+                                                        sharedPrefs.edit().putBoolean("dogfood_pending_step2", true).apply()
+                                                        RootUtils.runAsRoot(LaunchCommands.ENABLE_DOGFOOD_STEP_1)
+                                                    }
+                                                }
+                                            } else {
+                                                Pair("This will disable the Dogfood Hub and restart your device's interface") {
+                                                    coroutineScope.launch { RootUtils.runAsRoot(LaunchCommands.DISABLE_DOGFOOD_HUB) }
+                                                }
                                             }
+                                            showRestartDialog = true
+                                        })
+                                        Spacer(Modifier.height(8.dp))
+                                        Button(
+                                            onClick = { coroutineScope.launch { RootUtils.runAsRoot(LaunchCommands.LAUNCH_DOGFOOD_HUB) } },
+                                            enabled = isDogfoodEnabled
+                                        ) { Text("Launch") }
+                                    }
+                                }
+                            }
+                            item {
+                                AppCard("Android Settings", "Launches the Android settings app") {
+                                    Button(onClick = {
+                                        coroutineScope.launch { RootUtils.runAsRoot(LaunchCommands.LAUNCH_ANDROID_SETTINGS) }
+                                    }) { Text("Launch") }
+                                }
+                            }
+                            item {
+                                AppCard("Android File Manager", "Launches the Android file manager") {
+                                    Button(onClick = {
+                                        coroutineScope.launch { RootUtils.runAsRoot(LaunchCommands.LAUNCH_FILE_MANAGER) }
+                                    }) { Text("Launch") }
+                                }
+                            }
+                            item {
+                                AppCard("Start App on Boot",
+                                    "Select an app to automatically launch on boot\nCurrent: ${if (appToLaunchOnBoot.isNullOrBlank()) "None" else appToLaunchOnBoot}") {
+                                    Row {
+                                        val isAppSelected = !appToLaunchOnBoot.isNullOrBlank()
+                                        val buttonText = if (isAppSelected) "Clear" else "Select"
+
+                                        Button(
+                                            onClick = {
+                                                if (isAppSelected) {
+                                                    saveAppToLaunchOnBoot(null)
+                                                } else {
+                                                    showSideloadedAppDialog = true
+                                                }
+                                            },
+                                        ) {
+                                            Text(buttonText)
                                         }
-                                    },
-                                    enabled = !isInstalling
+                                    }
+                                }
+                            }
+                        }
+
+                        1 -> {
+                            items(appList) { app ->
+                                val status = appStates[app.packageName]?.first ?: "Ready"
+                                val isInstalling = appStates[app.packageName]?.second ?: false
+                                AppCard(
+                                    title = app.title,
+                                    description = app.description,
+                                    status = status
                                 ) {
-                                    Text(buttonText)
+                                    val buttonText = when {
+                                        isInstalling -> "Processing..."
+                                        app.type == AppInstallType.MANUAL_LINK -> "Open Link"
+                                        app.type == AppInstallType.FILE_PICKER -> "Select"
+                                        else -> "Install"
+                                    }
+                                    Button(
+                                        onClick = {
+                                            if (app.type == AppInstallType.FILE_PICKER) {
+                                                selectedAppToInstall = app
+                                                apkPickerLauncher.launch("*/*")
+                                            } else {
+                                                appStates[app.packageName] = Pair("Starting...", true)
+                                                coroutineScope.launch {
+                                                    app.installAction(context, { newStatus ->
+                                                        appStates[app.packageName] = Pair(newStatus, true)
+                                                    }, null)
+                                                    appStates[app.packageName] = Pair(appStates[app.packageName]?.first ?: "Done", false)
+                                                }
+                                            }
+                                        },
+                                        enabled = !isInstalling
+                                    ) {
+                                        Text(buttonText)
+                                    }
                                 }
                             }
                         }
@@ -352,7 +389,6 @@ fun LaunchStartAppOnBootDialog(
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
-    // UPDATED: List now holds Drawable for the icon, plus name and package
     var appList by remember { mutableStateOf<List<Triple<Drawable, String, String>>>(emptyList()) }
     var isLoading by remember { mutableStateOf(true) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
@@ -362,44 +398,33 @@ fun LaunchStartAppOnBootDialog(
         isLoading = true
         errorMessage = null
         try {
-            // 1. Use RootUtils to get a list of third-party package names (-3 flag)
-            // This ensures we see all non-system apps regardless of visibility restrictions.
             val command = "pm list packages -3"
             val output = RootUtils.runAsRoot(command)
             val pm = context.packageManager
-
-            // Define a default icon for fallbacks
             val defaultIcon = context.getDrawable(android.R.drawable.sym_def_app_icon)!!
 
-            // Check if RootUtils returned an error (e.g., "Execution failed")
             if (output.contains("Execution failed") || output.contains("ERROR:")) {
                 errorMessage = "Failed to run command with root. Falling back to non-root method."
                 Log.e("SideloadedAppDialog", "Root command failed: $output")
 
-                // FALLBACK: Non-root method (UPDATED to fetch icon)
                 val installedApps = pm.getInstalledApplications(0)
                 appList = installedApps.filter { appInfo ->
                     (appInfo.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM) == 0
                 }.map { appInfo ->
-                    // FETCH ICON HERE
                     Triple(pm.getApplicationIcon(appInfo), pm.getApplicationLabel(appInfo).toString(), appInfo.packageName)
                 }.sortedBy { it.second }
 
             } else {
-                // 2. Parse the output: "package:com.example.app"
                 val packageNames = output.lines()
                     .filter { it.startsWith("package:") }
                     .map { it.substringAfter("package:").trim() }
                     .filter { packageName -> !exclusionList.any { packageName.startsWith(it) } }
 
-                // 3. Use standard PackageManager to get human-readable names and icons (UPDATED)
                 appList = packageNames.mapNotNull { packageName ->
                     try {
                         val appInfo = pm.getApplicationInfo(packageName, 0)
-                        // FETCH ICON HERE
                         Triple(pm.getApplicationIcon(appInfo), pm.getApplicationLabel(appInfo).toString(), packageName)
                     } catch (e: Exception) {
-                        // Use default icon if fetching fails
                         Triple(defaultIcon, packageName, packageName)
                     }
                 }.sortedBy { it.second }
@@ -431,7 +456,6 @@ fun LaunchStartAppOnBootDialog(
                     Text("No user-installed apps found.")
                 } else {
                     LazyColumn {
-                        // UPDATED: Destructure the Triple to get icon, name, and package
                         items(appList) { (icon, name, packageName) ->
                             Row(
                                 modifier = Modifier
@@ -440,14 +464,12 @@ fun LaunchStartAppOnBootDialog(
                                     .padding(vertical = 12.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                // NEW: Use DrawableImage composable for the icon
                                 DrawableImage(
                                     drawable = icon,
                                     contentDescription = name,
                                     modifier = Modifier.size(32.dp)
                                 )
                                 Spacer(modifier = Modifier.width(16.dp))
-                                // END NEW
                                 Column {
                                     Text(name, style = MaterialTheme.typography.titleMedium)
                                     Text(packageName, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -496,7 +518,6 @@ fun AppSection(
     }
 }
 
-// AppCard for simpler use cases (like launch buttons)
 @Composable
 fun AppCard(title: String, description: String, content: @Composable () -> Unit) {
     Card(modifier = Modifier
@@ -520,7 +541,6 @@ fun AppCard(title: String, description: String, content: @Composable () -> Unit)
     }
 }
 
-// AppCard for installation status
 @Composable
 fun AppCard(title: String, description: String, status: String, content: @Composable () -> Unit) {
     Card(modifier = Modifier
@@ -554,8 +574,6 @@ object LaunchCommands {
     const val ENABLE_DOGFOOD_STEP_2 = "am broadcast -a oculus.intent.action.DC_OVERRIDE --esa config_param_value oculus_systemshell:oculus_is_trusted_user:true\nstop\nstart"
     const val DISABLE_DOGFOOD_HUB = "magisk resetprop --delete ro.build.type\nstop\nstart"
     const val LAUNCH_DOGFOOD_HUB = "am start com.oculus.vrshell/com.oculus.panelapp.dogfood.DogfoodMainActivity"
-
-    // App Launching
     const val LAUNCH_ANDROID_SETTINGS = "am start -n com.android.settings/.Settings"
     const val LAUNCH_FILE_MANAGER = "am start -n com.android.documentsui/.files.FilesActivity"
 }

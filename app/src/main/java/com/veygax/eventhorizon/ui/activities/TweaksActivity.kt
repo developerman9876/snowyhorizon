@@ -17,10 +17,13 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ExpandLess
@@ -272,15 +275,12 @@ class TweaksActivity : ComponentActivity() {
         try {
             Log.d("RootBlocker", "enableRootBlocker function called.")
             copyHostsFileFromAssets(applicationContext)
-            // First, unmount any existing mount to prevent duplicates.
-            // Then, mount it and set the correct SELinux context.
             val commands = """
                 umount -l /system/etc/hosts
                 mount -o bind /data/adb/eventhorizon/hosts /system/etc/hosts
             """.trimIndent()
             RootUtils.runAsRoot(commands, useMountMaster = true)
         
-            // Check the status and return the result
             val check = RootUtils.runAsRoot("mount | grep /system/etc/hosts", useMountMaster = true)
             return@withContext check.isNotBlank()
         } catch (e: Exception) {
@@ -291,7 +291,6 @@ class TweaksActivity : ComponentActivity() {
 
     fun disableRootBlocker() {
         lifecycleScope.launch(Dispatchers.IO) {
-            // Unmount the hosts file and then toggle airplane mode to flush the DNS cache
             val commands = """
                 umount -l /system/etc/hosts
                 settings put global airplane_mode_on 1
@@ -304,9 +303,7 @@ class TweaksActivity : ComponentActivity() {
             val result = RootUtils.runAsRoot(commands, useMountMaster = true)
             Log.d("RootBlocker", "Disable root blocker result:\n$result")
 
-            // After disabling, update the UI state
             withContext(Dispatchers.Main) {
-                // It's good practice to re-check the state after the operation
                 val check = RootUtils.runAsRoot("mount | grep /system/etc/hosts", useMountMaster = true)
                 isRootBlockerManuallyEnabledState.value = check.isNotBlank()
             }
@@ -411,7 +408,7 @@ class TweaksActivity : ComponentActivity() {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun TweaksScreen(
     activity: TweaksActivity,
@@ -463,7 +460,7 @@ fun TweaksScreen(
     val initialMinFreqIsRunning = getInitialState("min_freq_is_running", initialMinFreqState)
     var minFreqOnBoot by rememberSaveable { mutableStateOf(initialMinFreqState) }
     var isMinFreqExecuting by remember { mutableStateOf(initialMinFreqIsRunning) }
-    var isCpuPerfMode by remember { mutableStateOf(false) } // Must wait for root check
+    var isCpuPerfMode by remember { mutableStateOf(false) }
 
     // GPU Tweaks
     val initialGpuMinFreqState = getInitialState("gpu_min_freq_on_boot")
@@ -532,14 +529,11 @@ fun TweaksScreen(
     val initialInfinitePanelsEnabled = getInitialState("infinite_panels_enabled")
     var isInfinitePanelsEnabled by rememberSaveable { mutableStateOf(initialInfinitePanelsEnabled) }
 
-    // This effect listens for the "stop all" message from the TweakService.
-    // It ensures the UI updates even when the action is triggered from the notification.
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner, context) {
         // --- Broadcast Receiver for "Stop All" ---
         val broadcastReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
-                // When the message is received, optimistically update all UI states to "off".
                 if (intent?.action == TweakService.BROADCAST_TWEAKS_STOPPED) {
                     isRainbowLedActive = false
                     isCustomLedActive = false
@@ -733,965 +727,1048 @@ fun TweaksScreen(
             )
         }
     ) { innerPadding ->
-        LazyColumn(
+        val tabTitles = listOf("LEDs", "Utilities", "System UI", "CPU", "GPU")
+        val initialTweakPage = sharedPrefs.getInt("last_tweak_tab", 0)
+        val pagerState = rememberPagerState(
+            initialPage = initialTweakPage,
+            pageCount = { tabTitles.size }
+        )
+
+        LaunchedEffect(pagerState.currentPage) {
+            sharedPrefs.edit().putInt("last_tweak_tab", pagerState.currentPage).apply()
+        }
+
+        Column(
             modifier = Modifier
                 .padding(innerPadding)
-                .padding(horizontal = 16.dp),
-            contentPadding = PaddingValues(vertical = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+                .fillMaxSize()
         ) {
-            item {
-                TweakSection(title = "LED Tweaks", sharedPrefs = sharedPrefs) {
-                    TweakCard("Rainbow LED", "Cycles notification LED through colors") {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Text("Run on Boot", style = MaterialTheme.typography.bodyMedium)
-                                Switch(
-                                    checked = runOnBoot,
-                                    onCheckedChange = { checked ->
-                                        runOnBoot = checked
-                                        val editor = sharedPrefs.edit()
-                                        editor.putBoolean("rgb_on_boot", checked)
-                                        if (checked) {
-                                            editor.putBoolean("custom_led_on_boot", false)
-                                            editor.putBoolean("power_led_on_boot", false)
-                                            powerLedOnBoot = false
-                                            customLedOnBoot = false
-                                        }
-                                        editor.apply()
-                                        coroutineScope.launch { snackbarHostState.showSnackbar(if (checked) "Rainbow LED on Boot Enabled" else "Rainbow LED on Boot Disabled") }
-                                    },
-                                    enabled = isRooted
-                                )
+            PrimaryTabRow(selectedTabIndex = pagerState.currentPage) {
+                tabTitles.forEachIndexed { index, title ->
+                    Tab(
+                        selected = pagerState.currentPage == index,
+                        onClick = {
+                            coroutineScope.launch {
+                                pagerState.animateScrollToPage(index)
                             }
-                            Button(
-                                onClick = {
-                                    val shouldStart = !isRainbowLedActive
-                                    if (shouldStart) {
-                                        isRainbowLedActive = true
-                                        isCustomLedActive = false
-                                        isPowerLedActive = false
-                                        sharedPrefs.edit().apply {
-                                            putBoolean("rgb_led_is_running", true)
-                                            putBoolean("custom_led_is_running", false)
-                                            putBoolean("power_led_is_running", false)
-                                            apply()
-                                        }
-                                        activity.startTweakServiceAction(TweakService.ACTION_START_RGB)
-                                        coroutineScope.launch { snackbarHostState.showSnackbar("Rainbow LED started") }
-                                    } else {
-                                        isRainbowLedActive = false
-                                        sharedPrefs.edit().putBoolean("rgb_led_is_running", false).apply()
-                                        activity.startTweakServiceAction(TweakService.ACTION_STOP_RGB)
-                                        coroutineScope.launch { snackbarHostState.showSnackbar("Rainbow LED stopped") }
-                                    }
-                                },
-                                enabled = isRooted,
-                                modifier = Modifier.width(90.dp)
-                            ) {
-                                Text(if (isRainbowLedActive) "Stop" else "Start")
-                            }
-                        }
-                    }
-                    TweakCard("Power Indicator LED", "Shows battery level with the LED color") {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Text("Run on Boot", style = MaterialTheme.typography.bodyMedium)
-                                Switch(
-                                    checked = powerLedOnBoot,
-                                    onCheckedChange = { isEnabled ->
-                                        powerLedOnBoot = isEnabled
-                                        val editor = sharedPrefs.edit()
-                                        editor.putBoolean("power_led_on_boot", isEnabled)
-                                        if (isEnabled) {
-                                            editor.putBoolean("rgb_on_boot", false)
-                                            editor.putBoolean("custom_led_on_boot", false)
-                                            runOnBoot = false
-                                            customLedOnBoot = false
-                                        }
-                                        editor.apply()
-                                        coroutineScope.launch { snackbarHostState.showSnackbar(if (isEnabled) "Power LED on Boot Enabled" else "Power LED on Boot Disabled") }
-                                    },
-                                    enabled = isRooted
-                                )
-                            }
-                            Button(
-                                onClick = {
-                                    val shouldStart = !isPowerLedActive
-                                    if (shouldStart) {
-                                        isPowerLedActive = true
-                                        isRainbowLedActive = false
-                                        isCustomLedActive = false
-                                        sharedPrefs.edit().apply {
-                                            putBoolean("power_led_is_running", true)
-                                            putBoolean("rgb_led_is_running", false)
-                                            putBoolean("custom_led_is_running", false)
-                                            apply()
-                                        }
-                                        activity.startTweakServiceAction(TweakService.ACTION_START_POWER_LED)
-                                        coroutineScope.launch { snackbarHostState.showSnackbar("Power LED started") }
-                                    } else {
-                                        isPowerLedActive = false
-                                        sharedPrefs.edit().putBoolean("power_led_is_running", false).apply()
-                                        activity.startTweakServiceAction(TweakService.ACTION_STOP_POWER_LED)
-                                        coroutineScope.launch { snackbarHostState.showSnackbar("Power LED stopped") }
-                                    }
-                                },
-                                enabled = isRooted,
-                                modifier = Modifier.width(90.dp)
-                            ) {
-                                Text(if (isPowerLedActive) "Stop" else "Start")
-                            }
-                        }
-                    }
-                    TweakCard("Custom LED Color", "Set a static color for the LED") {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Text("Run on Boot", style = MaterialTheme.typography.bodyMedium)
-                                Switch(
-                                    checked = customLedOnBoot,
-                                    onCheckedChange = { isEnabled ->
-                                        customLedOnBoot = isEnabled
-                                        val editor = sharedPrefs.edit()
-                                        editor.putBoolean("custom_led_on_boot", isEnabled)
-                                        if (isEnabled) {
-                                            editor.putBoolean("rgb_on_boot", false)
-                                            editor.putBoolean("power_led_on_boot", false)
-                                            runOnBoot = false
-                                            powerLedOnBoot = false
-                                        }
-                                        editor.apply()
-                                        coroutineScope.launch { snackbarHostState.showSnackbar(if (isEnabled) "Custom LED on Boot Enabled" else "Custom LED on Boot Disabled") }
-                                    },
-                                    enabled = isRooted
-                                )
-                            }
-                            Button(
-                                onClick = {
-                                    if (isCustomLedActive) {
-                                        isCustomLedActive = false
-                                        sharedPrefs.edit().putBoolean("custom_led_is_running", false).apply()
-                                        activity.startTweakServiceAction(TweakService.ACTION_STOP_CUSTOM_LED)
-                                        coroutineScope.launch { snackbarHostState.showSnackbar("Custom LED stopped") }
-                                    } else {
-                                        isCustomLedActive = true
-                                        isRainbowLedActive = false
-                                        isPowerLedActive = false
-                                        sharedPrefs.edit().apply {
-                                            putBoolean("custom_led_is_running", true)
-                                            putBoolean("rgb_led_is_running", false)
-                                            putBoolean("power_led_is_running", false)
-                                            apply()
-                                        }
-                                        activity.launchCustomColorPicker()
-                                        coroutineScope.launch(Dispatchers.IO) {
-                                            RootUtils.runAsRoot("pkill -f rgb_led.sh; pkill -f power_led.sh")
-                                        }
-                                    }
-                                },
-                                enabled = isRooted,
-                                modifier = Modifier.width(90.dp)
-                            ) {
-                                Text(if (isCustomLedActive) "Stop" else "Select")
-                            }
-                        }
-                    }
+                        },
+                        text = { Text(title) }
+                    )
                 }
             }
-            item {
-                TweakSection(title = "Utilities", sharedPrefs = sharedPrefs) {
-                    TweakCard(
-                        title = "Double-Tap Fix",
-                        description = "Applies fix for broken Double-Tap Passthrough feature"
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Text("Run on Boot", style = MaterialTheme.typography.bodyMedium)
-                                Switch(
-                                    checked = passthroughFixOnBoot,
-                                    onCheckedChange = { checked ->
-                                        passthroughFixOnBoot = checked
-                                        sharedPrefs.edit().putBoolean("passthrough_fix_on_boot", checked).apply()
-                                        coroutineScope.launch { snackbarHostState.showSnackbar(if (checked) "Passthrough Fix on Boot Enabled" else "Passthrough Fix on Boot Disabled") }
-                                    },
-                                    enabled = isRooted
-                                )
-                            }
-                            Button(
-                                onClick = {
-                                    val passthroughFixIntent = Intent(context, TweakService::class.java).apply {
-                                        action = TweakService.ACTION_APPLY_PASSTHROUGH_FIX
-                                    }
-                                    context.startService(passthroughFixIntent)
-                                },
-                                enabled = isRooted,
-                                modifier = Modifier.width(90.dp)
-                            ) {
-                                Text("Apply")
-                            }
-                        }
-                    }
-                    if (!isRooted) {
-                        TweakCard("Internet Kill Switch", "Blocks internet access on boot (No Root). This will also trigger the Domain Blocker after the reboot (Root).") {
-                            Column(modifier = Modifier.width(IntrinsicSize.Max)) {
-                                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
-                                    Text("Enable on Boot", style = MaterialTheme.typography.bodyMedium)
-                                    Switch(
-                                        checked = blockerOnBoot,
-                                        onCheckedChange = { checked ->
-                                            blockerOnBoot = checked
-                                            isRootBlockerOnBoot = checked
-                                            val editor = sharedPrefs.edit()
-                                            editor.putBoolean("blocker_on_boot", checked)
-                                            editor.putBoolean("root_blocker_on_boot", checked)
-                                            editor.apply()
-                                            coroutineScope.launch { snackbarHostState.showSnackbar(if (checked) "Blocker on Boot Enabled" else "Blocker on Boot Disabled") }
-                                        }
-                                    )
-                                }
-                                Spacer(Modifier.height(8.dp))
-                                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
-                                    Text("Blocker Status", style = MaterialTheme.typography.bodyMedium)
-                                    Switch(
-                                        checked = isBlockerEnabled,
-                                        onCheckedChange = { isEnabled ->
-                                            isBlockerEnabled = isEnabled
-                                            sharedPrefs.edit().putBoolean("blocker_is_running", isEnabled).apply()
-                                            if (isEnabled) {
-                                                activity.requestVpnPermission()
-                                            } else {
-                                                activity.stopDnsService()
-                                            }
-                                        }
-                                    )
-                                }
-                            }
-                        }
-                    }
-                    if (isRooted) {
-                        TweakCard("Meta Domain Blocker", "Blocks Meta domains using bind mounting (Root)") {
-                            Column(modifier = Modifier.width(IntrinsicSize.Max)) {
-                                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
-                                    Text("Enable on Boot", style = MaterialTheme.typography.bodyMedium)
-                                    Switch(
-                                        checked = isRootBlockerOnBoot,
-                                        onCheckedChange = { isEnabled ->
-                                            isRootBlockerOnBoot = isEnabled
-                                            blockerOnBoot = isEnabled
-                                            val editor = sharedPrefs.edit()
-                                            editor.putBoolean("root_blocker_on_boot", isEnabled)
-                                            editor.putBoolean("blocker_on_boot", isEnabled)
-                                            editor.apply()
-                                            coroutineScope.launch { snackbarHostState.showSnackbar(if (isEnabled) "Blocker on Boot Enabled" else "Blocker on Boot Disabled") }
-                                        }
-                                    )
-                                }
-                                Spacer(Modifier.height(8.dp))
-                                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
-                                    Text("Blocker Status", style = MaterialTheme.typography.bodyMedium)
-                                    Switch(
-                                        checked = isRootBlockerManuallyEnabled,
-                                        onCheckedChange = { isEnabled ->
-                                            isRootBlockerManuallyEnabled = isEnabled
-                                            sharedPrefs.edit().putBoolean("root_blocker_is_running", isEnabled).apply()
 
-                                            coroutineScope.launch {
-                                                if (isEnabled) {
-                                                    val isSuccess = activity.enableRootBlocker()
-                                                    isRootBlockerManuallyEnabled = isSuccess
-                                                    sharedPrefs.edit().putBoolean("root_blocker_is_running", isSuccess).apply()
-                                                    if (isSuccess) {
-                                                        snackbarHostState.showSnackbar("Root domain blocker enabled")
-                                                    } else {
-                                                        snackbarHostState.showSnackbar("Root domain blocker failed to enable")
+            HorizontalPager(
+                state = pagerState,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+            ) { page ->
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 12.dp),
+                    contentPadding = PaddingValues(vertical = 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    when (page) {
+                        0 -> {
+                            item {
+                                TweakCard("Rainbow LED", "Cycles notification LED through colors") {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                            Text("Run on Boot", style = MaterialTheme.typography.bodyMedium)
+                                            Switch(
+                                                checked = runOnBoot,
+                                                onCheckedChange = { checked ->
+                                                    runOnBoot = checked
+                                                    val editor = sharedPrefs.edit()
+                                                    editor.putBoolean("rgb_on_boot", checked)
+                                                    if (checked) {
+                                                        editor.putBoolean("custom_led_on_boot", false)
+                                                        editor.putBoolean("power_led_on_boot", false)
+                                                        powerLedOnBoot = false
+                                                        customLedOnBoot = false
                                                     }
+                                                    editor.apply()
+                                                    coroutineScope.launch { snackbarHostState.showSnackbar(if (checked) "Rainbow LED on Boot Enabled" else "Rainbow LED on Boot Disabled") }
+                                                },
+                                                enabled = isRooted
+                                            )
+                                        }
+                                        Button(
+                                            onClick = {
+                                                val shouldStart = !isRainbowLedActive
+                                                if (shouldStart) {
+                                                    isRainbowLedActive = true
+                                                    isCustomLedActive = false
+                                                    isPowerLedActive = false
+                                                    sharedPrefs.edit().apply {
+                                                        putBoolean("rgb_led_is_running", true)
+                                                        putBoolean("custom_led_is_running", false)
+                                                        putBoolean("power_led_is_running", false)
+                                                        apply()
+                                                    }
+                                                    activity.startTweakServiceAction(TweakService.ACTION_START_RGB)
+                                                    coroutineScope.launch { snackbarHostState.showSnackbar("Rainbow LED started") }
                                                 } else {
-                                                    activity.disableRootBlocker()
-                                                    sharedPrefs.edit().putBoolean("root_blocker_is_running", false).apply()
-                                                    snackbarHostState.showSnackbar("Root blocker disabled")
+                                                    isRainbowLedActive = false
+                                                    sharedPrefs.edit().putBoolean("rgb_led_is_running", false).apply()
+                                                    activity.startTweakServiceAction(TweakService.ACTION_STOP_RGB)
+                                                    coroutineScope.launch { snackbarHostState.showSnackbar("Rainbow LED stopped") }
                                                 }
-                                            }
-                                        },
-                                        enabled = isRooted
-                                    )
-                                }
-                            }
-                        }
-                    }
-                    TweakCard(
-                        title = "Wireless ADB",
-                        description = "Enables connecting to ADB over Wi-Fi",
-                        extraContent = {
-                            if (isWirelessAdbEnabled) {
-                                Text(
-                                    text = "adb connect $wifiIpAddress:5555",
-                                    style = MaterialTheme.typography.bodyMedium
-                                )
-                            }
-                        }
-                    ) {
-                        Column(modifier = Modifier.width(IntrinsicSize.Max)) {
-                            Column(
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Text("Enable on Boot", style = MaterialTheme.typography.bodyMedium)
-                                Switch(
-                                    checked = wirelessAdbOnBoot,
-                                    onCheckedChange = { checked ->
-                                        wirelessAdbOnBoot = checked
-                                        sharedPrefs.edit().putBoolean("wireless_adb_on_boot", checked).apply()
-                                        coroutineScope.launch { snackbarHostState.showSnackbar(if (checked) "Wireless ADB on Boot Enabled" else "Wireless ADB on Boot Disabled") }
-                                    },
-                                    enabled = isRooted
-                                )
-                            }
-                            Spacer(Modifier.height(8.dp))
-                            Column(
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Text("ADB Status", style = MaterialTheme.typography.bodyMedium)
-                                Switch(
-                                    checked = isWirelessAdbEnabled,
-                                    onCheckedChange = { isEnabled ->
-                                        isWirelessAdbEnabled = isEnabled
-                                        sharedPrefs.edit().putBoolean("wireless_adb_is_running", isWirelessAdbEnabled).apply()
-                                        coroutineScope.launch(Dispatchers.IO) {
-                                            val port = if (isEnabled) "5555" else "-1"
-                                            RootUtils.runAsRoot("setprop service.adb.tcp.port $port")
-                                            RootUtils.runAsRoot("stop adbd && start adbd")
-                                            withContext(Dispatchers.Main) {
-                                                snackbarHostState.showSnackbar(if (isEnabled) "Wireless ADB Enabled" else "Wireless ADB Disabled")
-                                            }
-                                        }
-                                    },
-                                    enabled = isRooted
-                                )
-                            }
-                        }
-                    }
-                    TweakCard("Intercept App Launching", "Stops Horizon Feed and Social Connections from being started") {
-                        Switch(
-                            checked = isInterceptorEnabled,
-                            onCheckedChange = { isEnabled ->
-                                isInterceptorEnabled = isEnabled
-                                sharedPrefs.edit().putBoolean("intercept_startup_apps", isEnabled).apply()
-                                coroutineScope.launch(Dispatchers.IO) {
-                                    if (isEnabled) {
-                                        activity.startTweakServiceAction(TweakService.ACTION_START_INTERCEPTOR)
-                                    } else {
-                                        activity.startTweakServiceAction(TweakService.ACTION_STOP_INTERCEPTOR)
-                                    }
-                                    withContext(Dispatchers.Main) {
-                                        snackbarHostState.showSnackbar(if (isEnabled) "App Interceptor Enabled" else "App Interceptor Disabled")
-                                    }
-                                }
-                            },
-                            enabled = isRooted
-                        )
-                    }
-                    TweakCard(
-                        title = "USB Notification Interceptor",
-                        description = "Listens for the Oculus MTP notification and turns on MTP mode"
-                    ) {
-                        Switch(
-                            checked = usbInterceptorEnabled.value,
-                            onCheckedChange = { isEnabled ->
-                                usbInterceptorEnabled.value = isEnabled
-                                sharedPrefs.edit().putBoolean("usb_interceptor_on_boot", isEnabled).apply()
-                                coroutineScope.launch(Dispatchers.IO) {
-                                    if (isEnabled) {
-                                        activity.startTweakServiceAction(TweakService.ACTION_START_USB_INTERCEPTOR)
-                                        snackbarHostState.showSnackbar("USB Interceptor Enabled")
-                                    } else {
-                                        activity.startTweakServiceAction(TweakService.ACTION_STOP_USB_INTERCEPTOR)
-                                        snackbarHostState.showSnackbar("USB Interceptor Disabled")
-                                    }
-                                }
-                            },
-                            enabled = isRooted
-                        )
-                    }
-                    TweakCard(
-                        title = "Disable Meta Telemetry",
-                        description = "Mounts over telemetry binaries and pauses/stops the processes indefinitely"
-                    ) {
-                        Switch(
-                            checked = isTelemetryDisabled,
-                            onCheckedChange = { isEnabled ->
-                                isTelemetryDisabled = isEnabled
-                                sharedPrefs.edit().putBoolean(TweakCommands.TELEMETRY_TOGGLE_KEY, isEnabled).apply()
-
-                                coroutineScope.launch(Dispatchers.IO) {
-                                    if (isRooted) {
-                                        if (isEnabled) {
-                                            activity.copyTelemetryBinaryFromAssets(context)
-                                            RootUtils.runAsRoot(TweakCommands.ENABLE_TELEMETRY_DISABLE, useMountMaster = true)
-                                            withContext(Dispatchers.Main) {
-                                                snackbarHostState.showSnackbar("Telemetry Disabled")
-                                            }
-                                        } else {
-                                            RootUtils.runAsRoot(TweakCommands.DISABLE_TELEMETRY_DISABLE, useMountMaster = true)
-                                            withContext(Dispatchers.Main) {
-                                                snackbarHostState.showSnackbar("Telemetry Enabled")
-                                            }
+                                            },
+                                            enabled = isRooted,
+                                            modifier = Modifier.width(90.dp)
+                                        ) {
+                                            Text(if (isRainbowLedActive) "Stop" else "Start")
                                         }
                                     }
                                 }
-                            },
-                            enabled = isRooted
-                        )
-                    }
-                    TweakCard("System Hang Fix", "Turns Wi-Fi off and on during boot to prevent the system from hanging in certain conditions") {
-                        Switch(
-                            checked = cycleWifiOnBoot,
-                            onCheckedChange = { isEnabled ->
-                                cycleWifiOnBoot = isEnabled
-                                sharedPrefs.edit().putBoolean("cycle_wifi_on_boot", isEnabled).apply()
-                                coroutineScope.launch { snackbarHostState.showSnackbar(if (isEnabled) "Wi-Fi Cycle on Boot Enabled" else "Wi-Fi Cycle on Boot Disabled") }
-                            },
-                            enabled = isRooted
-                        )
-                    }
-                    TweakCard(
-                        title = "Disable Proximity Sensor",
-                        description = "Prevents the headset from waking or sleeping automatically"
-                    ) {
-                        Column(modifier = Modifier.width(IntrinsicSize.Max)) {
-                            Column(
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Switch(
-                                    checked = isProxSensorDisabled,
-                                    onCheckedChange = { isEnabled ->
-                                        isProxSensorDisabled = isEnabled
-                                        sharedPrefs.edit().putBoolean("prox_sensor_disabled", isEnabled).apply()
-                                        coroutineScope.launch(Dispatchers.IO) {
-                                            val command = if (isEnabled) {
-                                                "am broadcast -a com.oculus.vrpowermanager.prox_close"
-                                            } else {
-                                                "am broadcast -a com.oculus.vrpowermanager.automation_disable"
-                                            }
-                                            RootUtils.runAsRoot(command)
+                            }
+                            item {
+                                TweakCard("Power Indicator LED", "Shows battery level with the LED color") {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                            Text("Run on Boot", style = MaterialTheme.typography.bodyMedium)
+                                            Switch(
+                                                checked = powerLedOnBoot,
+                                                onCheckedChange = { isEnabled ->
+                                                    powerLedOnBoot = isEnabled
+                                                    val editor = sharedPrefs.edit()
+                                                    editor.putBoolean("power_led_on_boot", isEnabled)
+                                                    if (isEnabled) {
+                                                        editor.putBoolean("rgb_on_boot", false)
+                                                        editor.putBoolean("custom_led_on_boot", false)
+                                                        runOnBoot = false
+                                                        customLedOnBoot = false
+                                                    }
+                                                    editor.apply()
+                                                    coroutineScope.launch { snackbarHostState.showSnackbar(if (isEnabled) "Power LED on Boot Enabled" else "Power LED on Boot Disabled") }
+                                                },
+                                                enabled = isRooted
+                                            )
+                                        }
+                                        Button(
+                                            onClick = {
+                                                val shouldStart = !isPowerLedActive
+                                                if (shouldStart) {
+                                                    isPowerLedActive = true
+                                                    isRainbowLedActive = false
+                                                    isCustomLedActive = false
+                                                    sharedPrefs.edit().apply {
+                                                        putBoolean("power_led_is_running", true)
+                                                        putBoolean("rgb_led_is_running", false)
+                                                        putBoolean("custom_led_is_running", false)
+                                                        apply()
+                                                    }
+                                                    activity.startTweakServiceAction(TweakService.ACTION_START_POWER_LED)
+                                                    coroutineScope.launch { snackbarHostState.showSnackbar("Power LED started") }
+                                                } else {
+                                                    isPowerLedActive = false
+                                                    sharedPrefs.edit().putBoolean("power_led_is_running", false).apply()
+                                                    activity.startTweakServiceAction(TweakService.ACTION_STOP_POWER_LED)
+                                                    coroutineScope.launch { snackbarHostState.showSnackbar("Power LED stopped") }
+                                                }
+                                            },
+                                            enabled = isRooted,
+                                            modifier = Modifier.width(90.dp)
+                                        ) {
+                                            Text(if (isPowerLedActive) "Stop" else "Start")
+                                        }
+                                    }
+                                }
+                            }
+                            item {
+                                TweakCard("Custom LED Color", "Set a static color for the LED") {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                            Text("Run on Boot", style = MaterialTheme.typography.bodyMedium)
+                                            Switch(
+                                                checked = customLedOnBoot,
+                                                onCheckedChange = { isEnabled ->
+                                                    customLedOnBoot = isEnabled
+                                                    val editor = sharedPrefs.edit()
+                                                    editor.putBoolean("custom_led_on_boot", isEnabled)
+                                                    if (isEnabled) {
+                                                        editor.putBoolean("rgb_on_boot", false)
+                                                        editor.putBoolean("power_led_on_boot", false)
+                                                        runOnBoot = false
+                                                        powerLedOnBoot = false
+                                                    }
+                                                    editor.apply()
+                                                    coroutineScope.launch { snackbarHostState.showSnackbar(if (isEnabled) "Custom LED on Boot Enabled" else "Custom LED on Boot Disabled") }
+                                                },
+                                                enabled = isRooted
+                                            )
+                                        }
+                                        Button(
+                                            onClick = {
+                                                if (isCustomLedActive) {
+                                                    isCustomLedActive = false
+                                                    sharedPrefs.edit().putBoolean("custom_led_is_running", false).apply()
+                                                    activity.startTweakServiceAction(TweakService.ACTION_STOP_CUSTOM_LED)
+                                                    coroutineScope.launch { snackbarHostState.showSnackbar("Custom LED stopped") }
+                                                } else {
+                                                    isCustomLedActive = true
+                                                    isRainbowLedActive = false
+                                                    isPowerLedActive = false
+                                                    sharedPrefs.edit().apply {
+                                                        putBoolean("custom_led_is_running", true)
+                                                        putBoolean("rgb_led_is_running", false)
+                                                        putBoolean("power_led_is_running", false)
+                                                        apply()
+                                                    }
+                                                    activity.launchCustomColorPicker()
+                                                    coroutineScope.launch(Dispatchers.IO) {
+                                                        RootUtils.runAsRoot("pkill -f rgb_led.sh; pkill -f power_led.sh")
+                                                    }
+                                                }
+                                            },
+                                            enabled = isRooted,
+                                            modifier = Modifier.width(90.dp)
+                                        ) {
+                                            Text(if (isCustomLedActive) "Stop" else "Select")
+                                        }
+                                    }
+                                }
+                            }
+                        }
 
-                                            withContext(Dispatchers.Main) {
-                                                snackbarHostState.showSnackbar(
-                                                    if (isEnabled) "Proximity Sensor Disabled"
-                                                    else "Proximity Sensor Restored"
+                        1 -> {
+                            item {
+                                TweakCard(
+                                    title = "Double-Tap Fix",
+                                    description = "Applies fix for broken Double-Tap Passthrough feature"
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                            Text("Run on Boot", style = MaterialTheme.typography.bodyMedium)
+                                            Switch(
+                                                checked = passthroughFixOnBoot,
+                                                onCheckedChange = { checked ->
+                                                    passthroughFixOnBoot = checked
+                                                    sharedPrefs.edit().putBoolean("passthrough_fix_on_boot", checked).apply()
+                                                    coroutineScope.launch { snackbarHostState.showSnackbar(if (checked) "Passthrough Fix on Boot Enabled" else "Passthrough Fix on Boot Disabled") }
+                                                },
+                                                enabled = isRooted
+                                            )
+                                        }
+                                        Button(
+                                            onClick = {
+                                                val passthroughFixIntent = Intent(context, TweakService::class.java).apply {
+                                                    action = TweakService.ACTION_APPLY_PASSTHROUGH_FIX
+                                                }
+                                                context.startService(passthroughFixIntent)
+                                            },
+                                            enabled = isRooted,
+                                            modifier = Modifier.width(90.dp)
+                                        ) {
+                                            Text("Apply")
+                                        }
+                                    }
+                                }
+                            }
+                            if (!isRooted) {
+                                item {
+                                    TweakCard("Internet Kill Switch", "Blocks internet access on boot (No Root). This will also trigger the Domain Blocker after the reboot (Root).") {
+                                        Column(modifier = Modifier.width(IntrinsicSize.Max)) {
+                                            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+                                                Text("Enable on Boot", style = MaterialTheme.typography.bodyMedium)
+                                                Switch(
+                                                    checked = blockerOnBoot,
+                                                    onCheckedChange = { checked ->
+                                                        blockerOnBoot = checked
+                                                        isRootBlockerOnBoot = checked
+                                                        val editor = sharedPrefs.edit()
+                                                        editor.putBoolean("blocker_on_boot", checked)
+                                                        editor.putBoolean("root_blocker_on_boot", checked)
+                                                        editor.apply()
+                                                        coroutineScope.launch { snackbarHostState.showSnackbar(if (checked) "Blocker on Boot Enabled" else "Blocker on Boot Disabled") }
+                                                    }
+                                                )
+                                            }
+                                            Spacer(Modifier.height(8.dp))
+                                            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+                                                Text("Blocker Status", style = MaterialTheme.typography.bodyMedium)
+                                                Switch(
+                                                    checked = isBlockerEnabled,
+                                                    onCheckedChange = { isEnabled ->
+                                                        isBlockerEnabled = isEnabled
+                                                        sharedPrefs.edit().putBoolean("blocker_is_running", isEnabled).apply()
+                                                        if (isEnabled) {
+                                                            activity.requestVpnPermission()
+                                                        } else {
+                                                            activity.stopDnsService()
+                                                        }
+                                                    }
                                                 )
                                             }
                                         }
-                                    },
-                                    enabled = isRooted
-                                )
-                            }
-                        }
-                    }
-                    TweakCard(
-                        title = "Disable Updater folder access",
-                        description = "Prevents the Updater from accessing folders it needs to run"
-                    ) {
-                        Column(modifier = Modifier.width(IntrinsicSize.Max)) {
-                            Spacer(Modifier.height(8.dp))
-                            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
-                                Text("Lock Status", style = MaterialTheme.typography.bodyMedium)
-                                Switch(
-                                    checked = isLockUpdateFoldersActive,
-                                    onCheckedChange = { isEnabled ->
-                                        coroutineScope.launch {
-                                            if (isEnabled) {
-                                                val success = activity.applyLockToUpdateFolders() 
-                                                withContext(Dispatchers.Main) {
-                                                    isLockUpdateFoldersActive = success
-                                                    sharedPrefs.edit().putBoolean("lock_update_folders_is_locked", success).apply()
-                                                    snackbarHostState.showSnackbar(if (success) "Disabled Updater access" else "Failed to disable access")
-                                                }
-                                            } else {
-                                                val success = activity.restoreUpdateFolders()
-                                                withContext(Dispatchers.Main) {
-                                                    isLockUpdateFoldersActive = !success
-                                                    sharedPrefs.edit().putBoolean("lock_update_folders_is_locked", !success).apply()
-                                                    snackbarHostState.showSnackbar(if (success) "Enabled Updater access" else "Failed to enable access")
-                                                }
-                                            }
-                                        }
-                                    },
-                                    enabled = isRooted
-                                )
-                            }
-                        }
-                    }
-                    TweakCard("Spoof Build Type", "Spoofs build type. Userdebug can enable features such as Dogfood or ShellDebug. This will restart your device") {
-                        val runSpoof: (String) -> Unit = { type ->
-                            coroutineScope.launch(Dispatchers.IO) {
-                                RootUtils.runAsRoot("magisk resetprop ro.build.type $type")
-                                withContext(Dispatchers.Main) {
-                                    snackbarHostState.showSnackbar("Build type spoofed to '$type'. Restarting Zygote...")
-                                RootUtils.runAsRoot("setprop ctl.restart zygote")
-                                }
-                            }
-                        }
-
-                        Column(
-                            verticalArrangement = Arrangement.spacedBy(8.dp),
-                            modifier = Modifier.width(IntrinsicSize.Max)
-                        ) {
-                            Button(
-                                onClick = { runSpoof("user") },
-                                enabled = isRooted,
-                                modifier = Modifier.fillMaxWidth()
-                            ) { Text("user") }
-                            Button(
-                                onClick = { runSpoof("userdebug") },
-                                enabled = isRooted,
-                                modifier = Modifier.fillMaxWidth()
-                            ) { Text("userdebug") }
-                            Button(
-                                onClick = { runSpoof("eng") },
-                                enabled = isRooted,
-                                modifier = Modifier.fillMaxWidth()
-                            ) { Text("eng") }
-                        }
-                    }
-                }
-            }
-
-            item {
-                TweakSection(title = "System UI", sharedPrefs = sharedPrefs) {
-                    TweakCard("UI Switching", "Switches between Navigator and Dock without rebooting") {
-                        Column(horizontalAlignment = Alignment.End) {
-                            Text(if (uiSwitchState == 1) "Navigator UI" else "Dock UI", style = MaterialTheme.typography.bodyMedium)
-                            Switch(
-                                checked = uiSwitchState == 1,
-                                onCheckedChange = { isNavigator ->
-                                    val newState = if (isNavigator) 1 else 0
-                                    uiSwitchState = newState
-                                    sharedPrefs.edit().putInt("ui_switch_state", newState).apply()
-                                    coroutineScope.launch(Dispatchers.IO) {
-                                        val command = if (isNavigator) TweakCommands.SET_UI_NAVIGATOR else TweakCommands.SET_UI_DOCK
-                                        runCommandWithWifiToggleIfNeeded(command)
-                                    }
-                                },
-                                enabled = isRooted
-                            )
-                        }
-                    }
-                    TweakCard("Void Transition", "Switches between Immersive transition and Void Transition") {
-                        Column(horizontalAlignment = Alignment.End) {
-                            Text(if (isVoidTransitionEnabled) "Void Transition" else "Immersive Transition", style = MaterialTheme.typography.bodyMedium)
-                            Switch(
-                                checked = isVoidTransitionEnabled,
-                                onCheckedChange = { isEnabled ->
-                                    isVoidTransitionEnabled = isEnabled
-                                    sharedPrefs.edit().putBoolean("transition_void_enabled", isEnabled).apply()
-                                    coroutineScope.launch(Dispatchers.IO) {
-                                        val command = if (isEnabled) TweakCommands.SET_TRANSITION_VOID else TweakCommands.SET_TRANSITION_IMMERSIVE
-                                        runCommandWithWifiToggleIfNeeded(command)
-                                    }
-                                },
-                                enabled = isRooted
-                            )
-                        }
-                    }
-                    TweakCard("Teleport Anywhere", "Teleport anywhere in the home environment") {
-                        Switch(
-                            checked = isTeleportLimitDisabled,
-                            onCheckedChange = { isEnabled ->
-                                isTeleportLimitDisabled = isEnabled
-                                sharedPrefs.edit().putBoolean("teleport_limit_disabled", isEnabled).apply()
-                                coroutineScope.launch(Dispatchers.IO) {
-                                    val command = if (isEnabled) TweakCommands.DISABLE_TELEPORT_LIMIT else TweakCommands.ENABLE_TELEPORT_LIMIT
-                                    RootUtils.runAsRoot(command)
-                                    withContext(Dispatchers.Main) {
-                                        snackbarHostState.showSnackbar(if (isEnabled) "Teleport Anywhere Enabled" else "Teleport Anywhere Disabled")
-                                    }
-                                }
-                            },
-                            enabled = isRooted
-                        )
-                    }
-                    TweakCard("Navigator Fog", "Enables the fog effect in the navigator background") {
-                        Switch(
-                            checked = isNavigatorFogEnabled,
-                            onCheckedChange = { isEnabled ->
-                                isNavigatorFogEnabled = isEnabled
-                                sharedPrefs.edit().putBoolean("navigator_fog_enabled", isEnabled).apply()
-                                coroutineScope.launch(Dispatchers.IO) {
-                                    val command = if (isEnabled) TweakCommands.ENABLE_NAVIGATOR_FOG else TweakCommands.DISABLE_NAVIGATOR_FOG
-                                    runCommandWithWifiToggleIfNeeded(command)
-                                }
-                            },
-                            enabled = isRooted
-                        )
-                    }
-                    TweakCard("Fixed Panel Scaling", "Makes panels change size with distance") {
-                        Switch(
-                            checked = isPanelScalingEnabled,
-                            onCheckedChange = { isEnabled ->
-                                isPanelScalingEnabled = isEnabled
-                                sharedPrefs.edit().putBoolean("panel_scaling_enabled", isEnabled).apply()
-                                coroutineScope.launch(Dispatchers.IO) {
-                                    val command = if (isEnabled) TweakCommands.ENABLE_PANEL_SCALING else TweakCommands.DISABLE_PANEL_SCALING
-                                    runCommandWithWifiToggleIfNeeded(command)
-                                }
-                            },
-                            enabled = isRooted
-                        )
-                    }
-                    TweakCard("Infinite Floating Panels", "Enables infinite floating panels") {
-                        Switch(
-                            checked = isInfinitePanelsEnabled,
-                            onCheckedChange = { isEnabled ->
-                                isInfinitePanelsEnabled = isEnabled
-                                sharedPrefs.edit().putBoolean("infinite_panels_enabled", isEnabled).apply()
-                                coroutineScope.launch(Dispatchers.IO) {
-                                    val command = if (isEnabled) TweakCommands.ENABLE_INFINITE_PANELS else TweakCommands.DISABLE_INFINITE_PANELS
-                                    runCommandWithWifiToggleIfNeeded(command)
-                                }
-                            },
-                            enabled = isRooted
-                        )
-                    }
-                }
-            }
-
-            item {
-                TweakSection(title = "CPU Tweaks", sharedPrefs = sharedPrefs) {
-                    // --- Centered and Compacted CPU Monitor Card ---
-                    if (isRooted) {
-                        Card(modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 4.dp)) {
-                            Column(
-                                modifier = Modifier.padding(16.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally
-                            ) {
-                                Text(text = "CPU Monitor", style = MaterialTheme.typography.titleMedium)
-                                Spacer(modifier = Modifier.height(12.dp))
-                                
-                                // Declare temp variables here so they are in scope for the Text below
-                                val tempC = cpuMonitorInfo.tempCelsius
-                                val tempF = (tempC * 9 / 5) + 32
-
-                                // Temperature Toggle
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text("°C")
-                                    Switch(
-                                        checked = isFahrenheit,
-                                        onCheckedChange = { checked ->
-                                            isFahrenheit = checked
-                                            sharedPrefs.edit().putBoolean("temp_unit_is_fahrenheit", checked).apply()
-                                        },
-                                        modifier = Modifier.height(24.dp).padding(horizontal = 8.dp)
-                                    )
-                                    Text("°F")
-                                }
-                                Text(
-                                    text = if (isFahrenheit) "$tempF °F" else "$tempC °C",
-                                    style = MaterialTheme.typography.headlineSmall,
-                                    fontWeight = FontWeight.Bold
-                                )
-
-                                Spacer(modifier = Modifier.height(12.dp))
-                                
-                                // Core Details
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceAround
-                                ) {
-                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                        Text("Big Cores", fontWeight = FontWeight.Bold)
-                                        Text("${cpuMonitorInfo.bigCoreUsagePercent}% Usage")
-                                        Text("${cpuMonitorInfo.bigCoreMaxFreqMhz} - ${cpuMonitorInfo.bigCoreMinFreqMhz} MHz")
-                                    }
-                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                        Text("LITTLE Cores", fontWeight = FontWeight.Bold)
-                                        Text("${cpuMonitorInfo.littleCoreUsagePercent}% Usage")
-                                        Text("${cpuMonitorInfo.littleCoreMaxFreqMhz} - ${cpuMonitorInfo.littleCoreMinFreqMhz} MHz")
                                     }
                                 }
                             }
-                        }
-                    }
-                    TweakCard("Set Min Frequency", "Sets minimum CPU frequency to 691MHz (Instead of max)") {
-                        Column(horizontalAlignment = Alignment.End) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Text("Run on Boot", style = MaterialTheme.typography.bodyMedium)
-                                Switch(
-                                    checked = minFreqOnBoot,
-                                    onCheckedChange = { checked ->
-                                        minFreqOnBoot = checked
-                                        sharedPrefs.edit().putBoolean("min_freq_on_boot", checked).apply()
-                                        coroutineScope.launch { snackbarHostState.showSnackbar(if (checked) "CPU Min Freq on Boot Enabled" else "CPU Min Freq on Boot Disabled") }
-                                    },
-                                    enabled = isRooted
-                                )
-                            }
-                            Spacer(Modifier.height(8.dp))
-                            Button(
-                                onClick = {
-                                    coroutineScope.launch(Dispatchers.IO) {
-                                        val shouldStart = !isMinFreqExecuting
-                                        isMinFreqExecuting = shouldStart
-                                        try {
-                                            if (isMinFreqExecuting) {
-                                                activity.startTweakServiceAction(TweakService.ACTION_START_MIN_FREQ)
-                                                coroutineScope.launch { snackbarHostState.showSnackbar("CPU Min Freq lock started") }
-                                            } else {
-                                                activity.startTweakServiceAction(TweakService.ACTION_STOP_MIN_FREQ)
-                                                coroutineScope.launch { snackbarHostState.showSnackbar("CPU Min Freq lock stopped") }
-                                            }
-                                            sharedPrefs.edit().putBoolean("min_freq_is_running", isMinFreqExecuting).apply()
-                                        } catch (e: Exception) {
-                                            isMinFreqExecuting = !shouldStart
-                                        }
-                                    }
-                                },
-                                enabled = isRooted,
-                                modifier = Modifier.widthIn(min = 80.dp)
-                            ) {
-                                Text(if (isMinFreqExecuting) "Stop" else "Start")
-                            }
-                        }
-                    }
-                    TweakCard("CPU Governor", "Switches the CPU governor between schedutil and performance") {
-                        Column(horizontalAlignment = Alignment.End) {
-                            Text(if (isCpuPerfMode) "Performance" else "Schedutil", style = MaterialTheme.typography.bodyMedium)
-                            Switch(
-                                checked = isCpuPerfMode,
-                                onCheckedChange = { isEnabled ->
-                                    isCpuPerfMode = isEnabled
-                                    coroutineScope.launch(Dispatchers.IO) {
-                                        val governor = if (isEnabled) "performance" else "schedutil"
-                                        val command = (0..5).joinToString("\n") {
-                                            """
-                                            chmod 644 /sys/devices/system/cpu/cpu$it/cpufreq/scaling_governor
-                                            echo '$governor' > /sys/devices/system/cpu/cpu$it/cpufreq/scaling_governor
-                                            chmod 444 /sys/devices/system/cpu/cpu$it/cpufreq/scaling_governor
-                                            """.trimIndent()
-                                        }
-                                        RootUtils.runAsRoot(command)
-                                        withContext(Dispatchers.Main) {
-                                            snackbarHostState.showSnackbar("CPU Governor set to $governor")
-                                        }
-                                    }
-                                },
-                                enabled = isRooted
-                            )
-                        }
-                    }
-                }
-            }
-            item {
-                TweakSection(title = "GPU Tweaks", sharedPrefs = sharedPrefs) {
-                    if (isRooted) {
-                        Card(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 4.dp)
-                        ) {
-                            Column(
-                                modifier = Modifier
-                                    .padding(16.dp)
-                                    .fillMaxWidth(),
-                                horizontalAlignment = Alignment.CenterHorizontally
-                            ) {
-                                Text(text = "GPU Monitor", style = MaterialTheme.typography.titleMedium)
-                                Spacer(modifier = Modifier.height(12.dp))
-            
-                                val tempC = gpuMonitorInfo.tempCelsius
-                                val tempF = (tempC * 9 / 5) + 32
-            
-                                // Temperature toggle (reuse same Fahrenheit setting)
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.Center
-                                ) {
-                                    Text("°C")
-                                    Switch(
-                                        checked = isFahrenheit,
-                                        onCheckedChange = { checked ->
-                                            isFahrenheit = checked
-                                            sharedPrefs.edit()
-                                                .putBoolean("temp_unit_is_fahrenheit", checked)
-                                                .apply()
-                                        },
-                                        modifier = Modifier
-                                            .height(24.dp)
-                                            .padding(horizontal = 8.dp)
-                                    )
-                                    Text("°F")
-                                }
-            
-                                Text(
-                                    text = if (isFahrenheit) "$tempF °F" else "$tempC °C",
-                                    style = MaterialTheme.typography.headlineSmall,
-                                    fontWeight = FontWeight.Bold
-                                )
-            
-                                Spacer(modifier = Modifier.height(12.dp))
-            
-                                Column(
-                                    horizontalAlignment = Alignment.CenterHorizontally
-                                ) {
-                                    Text(
-                                        text = "${gpuMonitorInfo.usagePercent}% Usage",
-                                        style = MaterialTheme.typography.bodyLarge
-                                    )
-                                    Text(
-                                        // Show the current max/min from the monitor
-                                        text = "${gpuMonitorInfo.maxFreqMhz} - ${gpuMonitorInfo.minFreqMhz} MHz",
-                                        style = MaterialTheme.typography.bodyLarge
-                                    )
-                                }
-                            }
-                        }
-                    }
-                    TweakCard("Set Min Frequency", "Sets minimum GPU frequency to 285MHz") {
-                        Column(horizontalAlignment = Alignment.End) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Text("Run on Boot", style = MaterialTheme.typography.bodyMedium)
-                                Switch(
-                                    checked = gpuMinFreqOnBoot,
-                                    onCheckedChange = { checked ->
-                                        gpuMinFreqOnBoot = checked
-                                        sharedPrefs.edit().putBoolean("gpu_min_freq_on_boot", checked).apply()
-                                        coroutineScope.launch { snackbarHostState.showSnackbar(if (checked) "GPU Min Freq on Boot Enabled" else "GPU Min Freq on Boot Disabled") }
-                                    },
-                                    enabled = isRooted
-                                )
-                            }
-                            Spacer(Modifier.height(8.dp))
-                            Button(
-                                onClick = {
-                                    coroutineScope.launch(Dispatchers.IO) {
-                                        val shouldStart = !isGpuMinFreqRunning
-                                        isGpuMinFreqRunning = shouldStart
-                                        try {
-                                            if (shouldStart) {
-                                                activity.startTweakServiceAction(TweakService.ACTION_START_GPU_MIN_FREQ)
-                                                coroutineScope.launch { snackbarHostState.showSnackbar("GPU Min Freq lock started") }
-                                            } else {
-                                                activity.startTweakServiceAction(TweakService.ACTION_STOP_GPU_MIN_FREQ)
-                                                coroutineScope.launch { snackbarHostState.showSnackbar("GPU Min Freq lock stopped") }
-                                            }
-                                            sharedPrefs.edit().putBoolean("gpu_min_freq_is_running", isGpuMinFreqRunning).apply()
-                                        } catch (e: Exception) {
-                                            isGpuMinFreqRunning = !shouldStart
-                                        }
-                                    }
-                                },
-                                enabled = isRooted,
-                                modifier = Modifier.widthIn(min = 80.dp)
-                            ) {
-                                Text(if (isGpuMinFreqRunning) "Stop" else "Start")
-                            }
-                        }
-                    }
-                    TweakCard("Set Max Frequency", "Sets maximum GPU frequency from selection\nWARNING: Setting higher than 492MHz could cause instability") {
-                        Column(horizontalAlignment = Alignment.End) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                Box(
-                                    modifier = Modifier.wrapContentSize(Alignment.TopStart)
-                                ) {
-                                    TextButton(
-                                        onClick = { isGpuMaxDropdownExpanded = true },
-                                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
-                                    ) {
-                                        Text(
-                                            text = "$selectedGpuMaxFreq MHz",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            fontWeight = FontWeight.Bold
-                                        )
-                                        Icon(
-                                            imageVector = if (isGpuMaxDropdownExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                                            contentDescription = null,
-                                            modifier = Modifier.size(18.dp).padding(start = 4.dp)
-                                        )
-                                    }
-                                    DropdownMenu(
-                                        expanded = isGpuMaxDropdownExpanded,
-                                        onDismissRequest = { isGpuMaxDropdownExpanded = false }
-                                    ) {
-                                        gpuMaxFreqOptionsMhz.forEach { freqMhz ->
-                                            DropdownMenuItem(
-                                                text = { Text("$freqMhz MHz", style = MaterialTheme.typography.bodySmall) },
-                                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
-                                                onClick = {
-                                                    selectedGpuMaxFreq = freqMhz
-                                                    sharedPrefs.edit().putString("gpu_max_freq_selection", freqMhz).apply()
-                                                    isGpuMaxDropdownExpanded = false
-                                                    
-                                                    // If script is running, restart it to apply new freq
-                                                    if (isGpuMaxFreqRunning) {
-                                                        activity.startTweakServiceAction(TweakService.ACTION_START_GPU_MAX_FREQ)
-                                                        coroutineScope.launch { snackbarHostState.showSnackbar("GPU Max Freq lock updated to $freqMhz MHz") }
-                                                    } else {
-                                                         coroutineScope.launch { snackbarHostState.showSnackbar("GPU Max Freq selection saved") }
+                            if (isRooted) {
+                                item {
+                                    TweakCard("Meta Domain Blocker", "Blocks Meta domains using bind mounting") {
+                                        Column(modifier = Modifier.width(IntrinsicSize.Max)) {
+                                            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+                                                Text("Enable on Boot", style = MaterialTheme.typography.bodyMedium)
+                                                Switch(
+                                                    checked = isRootBlockerOnBoot,
+                                                    onCheckedChange = { isEnabled ->
+                                                        isRootBlockerOnBoot = isEnabled
+                                                        blockerOnBoot = isEnabled
+                                                        val editor = sharedPrefs.edit()
+                                                        editor.putBoolean("root_blocker_on_boot", isEnabled)
+                                                        editor.putBoolean("blocker_on_boot", isEnabled)
+                                                        editor.apply()
+                                                        coroutineScope.launch { snackbarHostState.showSnackbar(if (isEnabled) "Blocker on Boot Enabled" else "Blocker on Boot Disabled") }
                                                     }
-                                                }
+                                                )
+                                            }
+                                            Spacer(Modifier.height(8.dp))
+                                            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+                                                Text("Blocker Status", style = MaterialTheme.typography.bodyMedium)
+                                                Switch(
+                                                    checked = isRootBlockerManuallyEnabled,
+                                                    onCheckedChange = { isEnabled ->
+                                                        isRootBlockerManuallyEnabled = isEnabled
+                                                        sharedPrefs.edit().putBoolean("root_blocker_is_running", isEnabled).apply()
+
+                                                        coroutineScope.launch {
+                                                            if (isEnabled) {
+                                                                val isSuccess = activity.enableRootBlocker()
+                                                                isRootBlockerManuallyEnabled = isSuccess
+                                                                sharedPrefs.edit().putBoolean("root_blocker_is_running", isSuccess).apply()
+                                                                if (isSuccess) {
+                                                                    snackbarHostState.showSnackbar("Root domain blocker enabled")
+                                                                } else {
+                                                                    snackbarHostState.showSnackbar("Root domain blocker failed to enable")
+                                                                }
+                                                            } else {
+                                                                activity.disableRootBlocker()
+                                                                sharedPrefs.edit().putBoolean("root_blocker_is_running", false).apply()
+                                                                snackbarHostState.showSnackbar("Root blocker disabled")
+                                                            }
+                                                        }
+                                                    },
+                                                    enabled = isRooted
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            item {
+                                TweakCard(
+                                    title = "Wireless ADB",
+                                    description = "Enables connecting to ADB over Wi-Fi",
+                                    extraContent = {
+                                        if (isWirelessAdbEnabled) {
+                                            Text(
+                                                text = "adb connect $wifiIpAddress:5555",
+                                                style = MaterialTheme.typography.bodyMedium
+                                            )
+                                        }
+                                    }
+                                ) {
+                                    Column(modifier = Modifier.width(IntrinsicSize.Max)) {
+                                        Column(
+                                            horizontalAlignment = Alignment.CenterHorizontally,
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Text("Enable on Boot", style = MaterialTheme.typography.bodyMedium)
+                                            Switch(
+                                                checked = wirelessAdbOnBoot,
+                                                onCheckedChange = { checked ->
+                                                    wirelessAdbOnBoot = checked
+                                                    sharedPrefs.edit().putBoolean("wireless_adb_on_boot", checked).apply()
+                                                    coroutineScope.launch { snackbarHostState.showSnackbar(if (checked) "Wireless ADB on Boot Enabled" else "Wireless ADB on Boot Disabled") }
+                                                },
+                                                enabled = isRooted
+                                            )
+                                        }
+                                        Spacer(Modifier.height(8.dp))
+                                        Column(
+                                            horizontalAlignment = Alignment.CenterHorizontally,
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Text("ADB Status", style = MaterialTheme.typography.bodyMedium)
+                                            Switch(
+                                                checked = isWirelessAdbEnabled,
+                                                onCheckedChange = { isEnabled ->
+                                                    isWirelessAdbEnabled = isEnabled
+                                                    sharedPrefs.edit().putBoolean("wireless_adb_is_running", isWirelessAdbEnabled).apply()
+                                                    coroutineScope.launch(Dispatchers.IO) {
+                                                        val port = if (isEnabled) "5555" else "-1"
+                                                        RootUtils.runAsRoot("setprop service.adb.tcp.port $port")
+                                                        RootUtils.runAsRoot("stop adbd && start adbd")
+                                                        withContext(Dispatchers.Main) {
+                                                            snackbarHostState.showSnackbar(if (isEnabled) "Wireless ADB Enabled" else "Wireless ADB Disabled")
+                                                        }
+                                                    }
+                                                },
+                                                enabled = isRooted
                                             )
                                         }
                                     }
                                 }
-                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                    Text("Run on Boot", style = MaterialTheme.typography.bodyMedium)
+                            }
+                            item {
+                                TweakCard("Intercept App Launching", "Stops Horizon Feed and Social Connections from being started") {
                                     Switch(
-                                        checked = gpuMaxFreqOnBoot,
-                                        onCheckedChange = { checked ->
-                                            gpuMaxFreqOnBoot = checked
-                                            sharedPrefs.edit().putBoolean("gpu_max_freq_on_boot", checked).apply()
-                                            coroutineScope.launch { snackbarHostState.showSnackbar(if (checked) "GPU Max Freq on Boot Enabled" else "GPU Max Freq on Boot Disabled") }
+                                        checked = isInterceptorEnabled,
+                                        onCheckedChange = { isEnabled ->
+                                            isInterceptorEnabled = isEnabled
+                                            sharedPrefs.edit().putBoolean("intercept_startup_apps", isEnabled).apply()
+                                            coroutineScope.launch(Dispatchers.IO) {
+                                                if (isEnabled) {
+                                                    activity.startTweakServiceAction(TweakService.ACTION_START_INTERCEPTOR)
+                                                } else {
+                                                    activity.startTweakServiceAction(TweakService.ACTION_STOP_INTERCEPTOR)
+                                                }
+                                                withContext(Dispatchers.Main) {
+                                                    snackbarHostState.showSnackbar(if (isEnabled) "App Interceptor Enabled" else "App Interceptor Disabled")
+                                                }
+                                            }
                                         },
                                         enabled = isRooted
                                     )
                                 }
                             }
-
-                            Spacer(Modifier.height(8.dp))
-
-                            Button(
-                                onClick = {
-                                    coroutineScope.launch(Dispatchers.IO) {
-                                        val shouldStart = !isGpuMaxFreqRunning
-                                        isGpuMaxFreqRunning = shouldStart
-                                        try {
-                                            if (shouldStart) {
-                                                sharedPrefs.edit().putString("gpu_max_freq_selection", selectedGpuMaxFreq).apply()
-                                                activity.startTweakServiceAction(TweakService.ACTION_START_GPU_MAX_FREQ)
-                                                coroutineScope.launch { snackbarHostState.showSnackbar("GPU Max Freq lock started at $selectedGpuMaxFreq MHz") }
-                                            } else {
-                                                activity.startTweakServiceAction(TweakService.ACTION_STOP_GPU_MAX_FREQ)
-                                                coroutineScope.launch { snackbarHostState.showSnackbar("GPU Max Freq lock stopped") }
+                            item {
+                                TweakCard(
+                                    title = "USB Notification Interceptor",
+                                    description = "Listens for the Oculus MTP notification and turns on MTP mode"
+                                ) {
+                                    Switch(
+                                        checked = usbInterceptorEnabled.value,
+                                        onCheckedChange = { isEnabled ->
+                                            usbInterceptorEnabled.value = isEnabled
+                                            sharedPrefs.edit().putBoolean("usb_interceptor_on_boot", isEnabled).apply()
+                                            coroutineScope.launch(Dispatchers.IO) {
+                                                if (isEnabled) {
+                                                    activity.startTweakServiceAction(TweakService.ACTION_START_USB_INTERCEPTOR)
+                                                    snackbarHostState.showSnackbar("USB Interceptor Enabled")
+                                                } else {
+                                                    activity.startTweakServiceAction(TweakService.ACTION_STOP_USB_INTERCEPTOR)
+                                                    snackbarHostState.showSnackbar("USB Interceptor Disabled")
+                                                }
                                             }
-                                            sharedPrefs.edit().putBoolean("gpu_max_freq_is_running", isGpuMaxFreqRunning).apply()
-                                        } catch (e: Exception) {
-                                            Log.e("TweaksActivity", "Failed to toggle GPU Max Freq script", e)
-                                            isGpuMaxFreqRunning = !shouldStart
+                                        },
+                                        enabled = isRooted
+                                    )
+                                }
+                            }
+                            item {
+                                TweakCard(
+                                    title = "Disable Meta Telemetry",
+                                    description = "Mounts over telemetry binaries and pauses/stops the processes indefinitely"
+                                ) {
+                                    Switch(
+                                        checked = isTelemetryDisabled,
+                                        onCheckedChange = { isEnabled ->
+                                            isTelemetryDisabled = isEnabled
+                                            sharedPrefs.edit().putBoolean(TweakCommands.TELEMETRY_TOGGLE_KEY, isEnabled).apply()
+
+                                            coroutineScope.launch(Dispatchers.IO) {
+                                                if (isRooted) {
+                                                    if (isEnabled) {
+                                                        activity.copyTelemetryBinaryFromAssets(context)
+                                                        RootUtils.runAsRoot(TweakCommands.ENABLE_TELEMETRY_DISABLE, useMountMaster = true)
+                                                        withContext(Dispatchers.Main) {
+                                                            snackbarHostState.showSnackbar("Telemetry Disabled")
+                                                        }
+                                                    } else {
+                                                        RootUtils.runAsRoot(TweakCommands.DISABLE_TELEMETRY_DISABLE, useMountMaster = true)
+                                                        withContext(Dispatchers.Main) {
+                                                            snackbarHostState.showSnackbar("Telemetry Enabled")
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        },
+                                        enabled = isRooted
+                                    )
+                                }
+                            }
+                            item {
+                                TweakCard("System Hang Fix", "Turns Wi-Fi off and on during boot to prevent the system from hanging in certain conditions") {
+                                    Switch(
+                                        checked = cycleWifiOnBoot,
+                                        onCheckedChange = { isEnabled ->
+                                            cycleWifiOnBoot = isEnabled
+                                            sharedPrefs.edit().putBoolean("cycle_wifi_on_boot", isEnabled).apply()
+                                            coroutineScope.launch { snackbarHostState.showSnackbar(if (isEnabled) "Wi-Fi Cycle on Boot Enabled" else "Wi-Fi Cycle on Boot Disabled") }
+                                        },
+                                        enabled = isRooted
+                                    )
+                                }
+                            }
+                            item {
+                                TweakCard(
+                                    title = "Disable Proximity Sensor",
+                                    description = "Prevents the headset from waking or sleeping automatically"
+                                ) {
+                                    Column(modifier = Modifier.width(IntrinsicSize.Max)) {
+                                        Column(
+                                            horizontalAlignment = Alignment.CenterHorizontally,
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Switch(
+                                                checked = isProxSensorDisabled,
+                                                onCheckedChange = { isEnabled ->
+                                                    isProxSensorDisabled = isEnabled
+                                                    sharedPrefs.edit().putBoolean("prox_sensor_disabled", isEnabled).apply()
+                                                    coroutineScope.launch(Dispatchers.IO) {
+                                                        val command = if (isEnabled) {
+                                                            "am broadcast -a com.oculus.vrpowermanager.prox_close"
+                                                        } else {
+                                                            "am broadcast -a com.oculus.vrpowermanager.automation_disable"
+                                                        }
+                                                        RootUtils.runAsRoot(command)
+
+                                                        withContext(Dispatchers.Main) {
+                                                            snackbarHostState.showSnackbar(
+                                                                if (isEnabled) "Proximity Sensor Disabled"
+                                                                else "Proximity Sensor Restored"
+                                                            )
+                                                        }
+                                                    }
+                                                },
+                                                enabled = isRooted
+                                            )
                                         }
                                     }
-                                },
-                                enabled = isRooted,
-                                modifier = Modifier.widthIn(min = 80.dp)
-                            ) {
-                                Text(if (isGpuMaxFreqRunning) "Stop" else "Start")
+                                }
+                            }
+                            item {
+                                TweakCard(
+                                    title = "Disable Updater folder access",
+                                    description = "Prevents the Updater from accessing folders it needs to run"
+                                ) {
+                                    Column(modifier = Modifier.width(IntrinsicSize.Max)) {
+                                        Spacer(Modifier.height(8.dp))
+                                        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+                                            Text("Lock Status", style = MaterialTheme.typography.bodyMedium)
+                                            Switch(
+                                                checked = isLockUpdateFoldersActive,
+                                                onCheckedChange = { isEnabled ->
+                                                    coroutineScope.launch {
+                                                        if (isEnabled) {
+                                                            val success = activity.applyLockToUpdateFolders() 
+                                                            withContext(Dispatchers.Main) {
+                                                                isLockUpdateFoldersActive = success
+                                                                sharedPrefs.edit().putBoolean("lock_update_folders_is_locked", success).apply()
+                                                                snackbarHostState.showSnackbar(if (success) "Disabled Updater access" else "Failed to disable access")
+                                                            }
+                                                        } else {
+                                                            val success = activity.restoreUpdateFolders()
+                                                            withContext(Dispatchers.Main) {
+                                                                isLockUpdateFoldersActive = !success
+                                                                sharedPrefs.edit().putBoolean("lock_update_folders_is_locked", !success).apply()
+                                                                snackbarHostState.showSnackbar(if (success) "Enabled Updater access" else "Failed to enable access")
+                                                            }
+                                                        }
+                                                    }
+                                                },
+                                                enabled = isRooted
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                            item {
+                                TweakCard("Spoof Build Type", "Spoofs build type. Userdebug can enable features such as Dogfood or ShellDebug. This will restart your device") {
+                                    val runSpoof: (String) -> Unit = { type ->
+                                        coroutineScope.launch(Dispatchers.IO) {
+                                            RootUtils.runAsRoot("magisk resetprop ro.build.type $type")
+                                            withContext(Dispatchers.Main) {
+                                                snackbarHostState.showSnackbar("Build type spoofed to '$type'. Restarting Zygote...")
+                                            RootUtils.runAsRoot("setprop ctl.restart zygote")
+                                            }
+                                        }
+                                    }
+
+                                    Column(
+                                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                                        modifier = Modifier.width(IntrinsicSize.Max)
+                                    ) {
+                                        Button(
+                                            onClick = { runSpoof("user") },
+                                            enabled = isRooted,
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) { Text("user") }
+                                        Button(
+                                            onClick = { runSpoof("userdebug") },
+                                            enabled = isRooted,
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) { Text("userdebug") }
+                                        Button(
+                                            onClick = { runSpoof("eng") },
+                                            enabled = isRooted,
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) { Text("eng") }
+                                    }
+                                }
+                            }
+                        }
+
+                        2 -> {
+                            item {
+                                TweakCard("UI Switching", "Switches between Navigator and Dock without rebooting") {
+                                    Column(horizontalAlignment = Alignment.End) {
+                                        Text(if (uiSwitchState == 1) "Navigator UI" else "Dock UI", style = MaterialTheme.typography.bodyMedium)
+                                        Switch(
+                                            checked = uiSwitchState == 1,
+                                            onCheckedChange = { isNavigator ->
+                                                val newState = if (isNavigator) 1 else 0
+                                                uiSwitchState = newState
+                                                sharedPrefs.edit().putInt("ui_switch_state", newState).apply()
+                                                coroutineScope.launch(Dispatchers.IO) {
+                                                    val command = if (isNavigator) TweakCommands.SET_UI_NAVIGATOR else TweakCommands.SET_UI_DOCK
+                                                    runCommandWithWifiToggleIfNeeded(command)
+                                                }
+                                            },
+                                            enabled = isRooted
+                                        )
+                                    }
+                                }
+                            }
+                            item {
+                                TweakCard("Void Transition", "Switches between Immersive transition and Void Transition") {
+                                    Column(horizontalAlignment = Alignment.End) {
+                                        Text(if (isVoidTransitionEnabled) "Void Transition" else "Immersive Transition", style = MaterialTheme.typography.bodyMedium)
+                                        Switch(
+                                            checked = isVoidTransitionEnabled,
+                                            onCheckedChange = { isEnabled ->
+                                                isVoidTransitionEnabled = isEnabled
+                                                sharedPrefs.edit().putBoolean("transition_void_enabled", isEnabled).apply()
+                                                coroutineScope.launch(Dispatchers.IO) {
+                                                    val command = if (isEnabled) TweakCommands.SET_TRANSITION_VOID else TweakCommands.SET_TRANSITION_IMMERSIVE
+                                                    runCommandWithWifiToggleIfNeeded(command)
+                                                }
+                                            },
+                                            enabled = isRooted
+                                        )
+                                    }
+                                }
+                            }
+                            item {
+                                TweakCard("Teleport Anywhere", "Teleport anywhere in the home environment") {
+                                    Switch(
+                                        checked = isTeleportLimitDisabled,
+                                        onCheckedChange = { isEnabled ->
+                                            isTeleportLimitDisabled = isEnabled
+                                            sharedPrefs.edit().putBoolean("teleport_limit_disabled", isEnabled).apply()
+                                            coroutineScope.launch(Dispatchers.IO) {
+                                                val command = if (isEnabled) TweakCommands.DISABLE_TELEPORT_LIMIT else TweakCommands.ENABLE_TELEPORT_LIMIT
+                                                RootUtils.runAsRoot(command)
+                                                withContext(Dispatchers.Main) {
+                                                    snackbarHostState.showSnackbar(if (isEnabled) "Teleport Anywhere Enabled" else "Teleport Anywhere Disabled")
+                                                }
+                                            }
+                                        },
+                                        enabled = isRooted
+                                    )
+                                }
+                            }
+                            item {
+                                TweakCard("Navigator Fog", "Enables the fog effect in the navigator background") {
+                                    Switch(
+                                        checked = isNavigatorFogEnabled,
+                                        onCheckedChange = { isEnabled ->
+                                            isNavigatorFogEnabled = isEnabled
+                                            sharedPrefs.edit().putBoolean("navigator_fog_enabled", isEnabled).apply()
+                                            coroutineScope.launch(Dispatchers.IO) {
+                                                val command = if (isEnabled) TweakCommands.ENABLE_NAVIGATOR_FOG else TweakCommands.DISABLE_NAVIGATOR_FOG
+                                                runCommandWithWifiToggleIfNeeded(command)
+                                            }
+                                        },
+                                        enabled = isRooted
+                                    )
+                                }
+                            }
+                            item {
+                                TweakCard("Fixed Panel Scaling", "Makes panels change size with distance") {
+                                    Switch(
+                                        checked = isPanelScalingEnabled,
+                                        onCheckedChange = { isEnabled ->
+                                            isPanelScalingEnabled = isEnabled
+                                            sharedPrefs.edit().putBoolean("panel_scaling_enabled", isEnabled).apply()
+                                            coroutineScope.launch(Dispatchers.IO) {
+                                                val command = if (isEnabled) TweakCommands.ENABLE_PANEL_SCALING else TweakCommands.DISABLE_PANEL_SCALING
+                                                runCommandWithWifiToggleIfNeeded(command)
+                                            }
+                                        },
+                                        enabled = isRooted
+                                    )
+                                }
+                            }
+                            item {
+                                TweakCard("Infinite Floating Panels", "Enables infinite floating panels") {
+                                    Switch(
+                                        checked = isInfinitePanelsEnabled,
+                                        onCheckedChange = { isEnabled ->
+                                            isInfinitePanelsEnabled = isEnabled
+                                            sharedPrefs.edit().putBoolean("infinite_panels_enabled", isEnabled).apply()
+                                            coroutineScope.launch(Dispatchers.IO) {
+                                                val command = if (isEnabled) TweakCommands.ENABLE_INFINITE_PANELS else TweakCommands.DISABLE_INFINITE_PANELS
+                                                runCommandWithWifiToggleIfNeeded(command)
+                                            }
+                                        },
+                                        enabled = isRooted
+                                    )
+                                }
+                            }
+                        }
+
+                        3 -> {
+                            if (isRooted) {
+                                item {
+                                    Card(modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 4.dp)) {
+                                        Column(
+                                            modifier = Modifier.padding(16.dp),
+                                            horizontalAlignment = Alignment.CenterHorizontally
+                                        ) {
+                                            Text(text = "CPU Monitor", style = MaterialTheme.typography.titleMedium)
+                                            Spacer(modifier = Modifier.height(12.dp))
+                                            
+                                            // Declare temp variables here so they are in scope for the Text below
+                                            val tempC = cpuMonitorInfo.tempCelsius
+                                            val tempF = (tempC * 9 / 5) + 32
+
+                                            // Temperature Toggle
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                Text("°C")
+                                                Switch(
+                                                    checked = isFahrenheit,
+                                                    onCheckedChange = { checked ->
+                                                        isFahrenheit = checked
+                                                        sharedPrefs.edit().putBoolean("temp_unit_is_fahrenheit", checked).apply()
+                                                    },
+                                                    modifier = Modifier.height(24.dp).padding(horizontal = 8.dp)
+                                                )
+                                                Text("°F")
+                                            }
+                                            Text(
+                                                text = if (isFahrenheit) "$tempF °F" else "$tempC °C",
+                                                style = MaterialTheme.typography.headlineSmall,
+                                                fontWeight = FontWeight.Bold
+                                            )
+
+                                            Spacer(modifier = Modifier.height(12.dp))
+                                            
+                                            // Core Details
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.SpaceAround
+                                            ) {
+                                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                                    Text("Big Cores", fontWeight = FontWeight.Bold)
+                                                    Text("${cpuMonitorInfo.bigCoreUsagePercent}% Usage")
+                                                    Text("${cpuMonitorInfo.bigCoreMaxFreqMhz} - ${cpuMonitorInfo.bigCoreMinFreqMhz} MHz")
+                                                }
+                                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                                    Text("LITTLE Cores", fontWeight = FontWeight.Bold)
+                                                    Text("${cpuMonitorInfo.littleCoreUsagePercent}% Usage")
+                                                    Text("${cpuMonitorInfo.littleCoreMaxFreqMhz} - ${cpuMonitorInfo.littleCoreMinFreqMhz} MHz")
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            item {
+                                TweakCard("Set Min Frequency", "Sets minimum CPU frequency to 691MHz (Instead of max)") {
+                                    Column(horizontalAlignment = Alignment.End) {
+                                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                            Text("Run on Boot", style = MaterialTheme.typography.bodyMedium)
+                                            Switch(
+                                                checked = minFreqOnBoot,
+                                                onCheckedChange = { checked ->
+                                                    minFreqOnBoot = checked
+                                                    sharedPrefs.edit().putBoolean("min_freq_on_boot", checked).apply()
+                                                    coroutineScope.launch { snackbarHostState.showSnackbar(if (checked) "CPU Min Freq on Boot Enabled" else "CPU Min Freq on Boot Disabled") }
+                                                },
+                                                enabled = isRooted
+                                            )
+                                        }
+                                        Spacer(Modifier.height(8.dp))
+                                        Button(
+                                            onClick = {
+                                                coroutineScope.launch(Dispatchers.IO) {
+                                                    val shouldStart = !isMinFreqExecuting
+                                                    isMinFreqExecuting = shouldStart
+                                                    try {
+                                                        if (isMinFreqExecuting) {
+                                                            activity.startTweakServiceAction(TweakService.ACTION_START_MIN_FREQ)
+                                                            coroutineScope.launch { snackbarHostState.showSnackbar("CPU Min Freq lock started") }
+                                                        } else {
+                                                            activity.startTweakServiceAction(TweakService.ACTION_STOP_MIN_FREQ)
+                                                            coroutineScope.launch { snackbarHostState.showSnackbar("CPU Min Freq lock stopped") }
+                                                        }
+                                                        sharedPrefs.edit().putBoolean("min_freq_is_running", isMinFreqExecuting).apply()
+                                                    } catch (e: Exception) {
+                                                        isMinFreqExecuting = !shouldStart
+                                                    }
+                                                }
+                                            },
+                                            enabled = isRooted,
+                                            modifier = Modifier.widthIn(min = 80.dp)
+                                        ) {
+                                            Text(if (isMinFreqExecuting) "Stop" else "Start")
+                                        }
+                                    }
+                                }
+                            }
+                            item {
+                                TweakCard("CPU Governor", "Switches the CPU governor between schedutil and performance") {
+                                    Column(horizontalAlignment = Alignment.End) {
+                                        Text(if (isCpuPerfMode) "Performance" else "Schedutil", style = MaterialTheme.typography.bodyMedium)
+                                        Switch(
+                                            checked = isCpuPerfMode,
+                                            onCheckedChange = { isEnabled ->
+                                                isCpuPerfMode = isEnabled
+                                                coroutineScope.launch(Dispatchers.IO) {
+                                                    val governor = if (isEnabled) "performance" else "schedutil"
+                                                    val command = (0..5).joinToString("\n") {
+                                                        """
+                                                        chmod 644 /sys/devices/system/cpu/cpu$it/cpufreq/scaling_governor
+                                                        echo '$governor' > /sys/devices/system/cpu/cpu$it/cpufreq/scaling_governor
+                                                        chmod 444 /sys/devices/system/cpu/cpu$it/cpufreq/scaling_governor
+                                                        """.trimIndent()
+                                                    }
+                                                    RootUtils.runAsRoot(command)
+                                                    withContext(Dispatchers.Main) {
+                                                        snackbarHostState.showSnackbar("CPU Governor set to $governor")
+                                                    }
+                                                }
+                                            },
+                                            enabled = isRooted
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        4 -> {
+                            if (isRooted) {
+                                item {
+                                    Card(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(vertical = 4.dp)
+                                    ) {
+                                        Column(
+                                            modifier = Modifier
+                                                .padding(16.dp)
+                                                .fillMaxWidth(),
+                                            horizontalAlignment = Alignment.CenterHorizontally
+                                        ) {
+                                            Text(text = "GPU Monitor", style = MaterialTheme.typography.titleMedium)
+                                            Spacer(modifier = Modifier.height(12.dp))
+                        
+                                            val tempC = gpuMonitorInfo.tempCelsius
+                                            val tempF = (tempC * 9 / 5) + 32
+                        
+                                            // Temperature toggle (reuse same Fahrenheit setting)
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.Center
+                                            ) {
+                                                Text("°C")
+                                                Switch(
+                                                    checked = isFahrenheit,
+                                                    onCheckedChange = { checked ->
+                                                        isFahrenheit = checked
+                                                        sharedPrefs.edit()
+                                                            .putBoolean("temp_unit_is_fahrenheit", checked)
+                                                            .apply()
+                                                    },
+                                                    modifier = Modifier
+                                                        .height(24.dp)
+                                                        .padding(horizontal = 8.dp)
+                                                )
+                                                Text("°F")
+                                            }
+                        
+                                            Text(
+                                                text = if (isFahrenheit) "$tempF °F" else "$tempC °C",
+                                                style = MaterialTheme.typography.headlineSmall,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                        
+                                            Spacer(modifier = Modifier.height(12.dp))
+                        
+                                            Column(
+                                                horizontalAlignment = Alignment.CenterHorizontally
+                                            ) {
+                                                Text(
+                                                    text = "${gpuMonitorInfo.usagePercent}% Usage",
+                                                    style = MaterialTheme.typography.bodyLarge
+                                                )
+                                                Text(
+                                                    // Show the current max/min from the monitor
+                                                    text = "${gpuMonitorInfo.maxFreqMhz} - ${gpuMonitorInfo.minFreqMhz} MHz",
+                                                    style = MaterialTheme.typography.bodyLarge
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            item {
+                                TweakCard("Set Min Frequency", "Sets minimum GPU frequency to 285MHz") {
+                                    Column(horizontalAlignment = Alignment.End) {
+                                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                            Text("Run on Boot", style = MaterialTheme.typography.bodyMedium)
+                                            Switch(
+                                                checked = gpuMinFreqOnBoot,
+                                                onCheckedChange = { checked ->
+                                                    gpuMinFreqOnBoot = checked
+                                                    sharedPrefs.edit().putBoolean("gpu_min_freq_on_boot", checked).apply()
+                                                    coroutineScope.launch { snackbarHostState.showSnackbar(if (checked) "GPU Min Freq on Boot Enabled" else "GPU Min Freq on Boot Disabled") }
+                                                },
+                                                enabled = isRooted
+                                            )
+                                        }
+                                        Spacer(Modifier.height(8.dp))
+                                        Button(
+                                            onClick = {
+                                                coroutineScope.launch(Dispatchers.IO) {
+                                                    val shouldStart = !isGpuMinFreqRunning
+                                                    isGpuMinFreqRunning = shouldStart
+                                                    try {
+                                                        if (shouldStart) {
+                                                            activity.startTweakServiceAction(TweakService.ACTION_START_GPU_MIN_FREQ)
+                                                            coroutineScope.launch { snackbarHostState.showSnackbar("GPU Min Freq lock started") }
+                                                        } else {
+                                                            activity.startTweakServiceAction(TweakService.ACTION_STOP_GPU_MIN_FREQ)
+                                                            coroutineScope.launch { snackbarHostState.showSnackbar("GPU Min Freq lock stopped") }
+                                                        }
+                                                        sharedPrefs.edit().putBoolean("gpu_min_freq_is_running", isGpuMinFreqRunning).apply()
+                                                    } catch (e: Exception) {
+                                                        isGpuMinFreqRunning = !shouldStart
+                                                    }
+                                                }
+                                            },
+                                            enabled = isRooted,
+                                            modifier = Modifier.widthIn(min = 80.dp)
+                                        ) {
+                                            Text(if (isGpuMinFreqRunning) "Stop" else "Start")
+                                        }
+                                    }
+                                }
+                            }
+                            item {
+                                TweakCard("Set Max Frequency", "Sets maximum GPU frequency from selection\nWARNING: Setting higher than 492MHz could cause instability") {
+                                    Column(horizontalAlignment = Alignment.End) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            Box(
+                                                modifier = Modifier.wrapContentSize(Alignment.TopStart)
+                                            ) {
+                                                TextButton(
+                                                    onClick = { isGpuMaxDropdownExpanded = true },
+                                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                                                ) {
+                                                    Text(
+                                                        text = "$selectedGpuMaxFreq MHz",
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                        fontWeight = FontWeight.Bold
+                                                    )
+                                                    Icon(
+                                                        imageVector = if (isGpuMaxDropdownExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                                        contentDescription = null,
+                                                        modifier = Modifier.size(18.dp).padding(start = 4.dp)
+                                                    )
+                                                }
+                                                DropdownMenu(
+                                                    expanded = isGpuMaxDropdownExpanded,
+                                                    onDismissRequest = { isGpuMaxDropdownExpanded = false }
+                                                ) {
+                                                    gpuMaxFreqOptionsMhz.forEach { freqMhz ->
+                                                        DropdownMenuItem(
+                                                            text = { Text("$freqMhz MHz", style = MaterialTheme.typography.bodySmall) },
+                                                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+                                                            onClick = {
+                                                                selectedGpuMaxFreq = freqMhz
+                                                                sharedPrefs.edit().putString("gpu_max_freq_selection", freqMhz).apply()
+                                                                isGpuMaxDropdownExpanded = false
+                                                                
+                                                                // If script is running, restart it to apply new freq
+                                                                if (isGpuMaxFreqRunning) {
+                                                                    activity.startTweakServiceAction(TweakService.ACTION_START_GPU_MAX_FREQ)
+                                                                    coroutineScope.launch { snackbarHostState.showSnackbar("GPU Max Freq lock updated to $freqMhz MHz") }
+                                                                } else {
+                                                                     coroutineScope.launch { snackbarHostState.showSnackbar("GPU Max Freq selection saved") }
+                                                                }
+                                                            }
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                                Text("Run on Boot", style = MaterialTheme.typography.bodyMedium)
+                                                Switch(
+                                                    checked = gpuMaxFreqOnBoot,
+                                                    onCheckedChange = { checked ->
+                                                        gpuMaxFreqOnBoot = checked
+                                                        sharedPrefs.edit().putBoolean("gpu_max_freq_on_boot", checked).apply()
+                                                        coroutineScope.launch { snackbarHostState.showSnackbar(if (checked) "GPU Max Freq on Boot Enabled" else "GPU Max Freq on Boot Disabled") }
+                                                    },
+                                                    enabled = isRooted
+                                                )
+                                            }
+                                        }
+
+                                        Spacer(Modifier.height(8.dp))
+
+                                        Button(
+                                            onClick = {
+                                                coroutineScope.launch(Dispatchers.IO) {
+                                                    val shouldStart = !isGpuMaxFreqRunning
+                                                    isGpuMaxFreqRunning = shouldStart
+                                                    try {
+                                                        if (shouldStart) {
+                                                            sharedPrefs.edit().putString("gpu_max_freq_selection", selectedGpuMaxFreq).apply()
+                                                            activity.startTweakServiceAction(TweakService.ACTION_START_GPU_MAX_FREQ)
+                                                            coroutineScope.launch { snackbarHostState.showSnackbar("GPU Max Freq lock started at $selectedGpuMaxFreq MHz") }
+                                                        } else {
+                                                            activity.startTweakServiceAction(TweakService.ACTION_STOP_GPU_MAX_FREQ)
+                                                            coroutineScope.launch { snackbarHostState.showSnackbar("GPU Max Freq lock stopped") }
+                                                        }
+                                                        sharedPrefs.edit().putBoolean("gpu_max_freq_is_running", isGpuMaxFreqRunning).apply()
+                                                    } catch (e: Exception) {
+                                                        Log.e("TweaksActivity", "Failed to toggle GPU Max Freq script", e)
+                                                        isGpuMaxFreqRunning = !shouldStart
+                                                    }
+                                                }
+                                            },
+                                            enabled = isRooted,
+                                            modifier = Modifier.widthIn(min = 80.dp)
+                                        ) {
+                                            Text(if (isGpuMaxFreqRunning) "Stop" else "Start")
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
