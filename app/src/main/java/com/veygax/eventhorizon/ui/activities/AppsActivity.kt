@@ -18,6 +18,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material3.*
@@ -39,6 +40,8 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.ui.viewinterop.AndroidView
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 // --- Data class to organize app information ---
 data class AppInfo(
@@ -88,11 +91,22 @@ fun AppsScreen() {
     var appToLaunchOnBoot by rememberSaveable {
         mutableStateOf(sharedPrefs.getString("start_app_on_boot", ""))
     }
+
+    // --- Uninstall Logic States ---
+    var isPreventAutoInstallEnabled by rememberSaveable {
+        mutableStateOf(sharedPrefs.getBoolean("prevent_auto_install", false))
+    }
+    var uninstallableApps by remember { mutableStateOf<List<Triple<String, String, Drawable?>>>(emptyList()) }
+    var isRefreshingUninstallList by remember { mutableStateOf(false) }
+
+    // --- App Launcher ---
     val saveAppToLaunchOnBoot: (String?) -> Unit = { packageName ->
         appToLaunchOnBoot = packageName
         sharedPrefs.edit().putString("start_app_on_boot", packageName).apply()
         showSideloadedAppDialog = false
     }
+
+    // --- APK Installer ---
     val localApkInstallAction: suspend (Context, (String) -> Unit, Uri?) -> Unit = { ctx, onStatus, uri ->
         uri?.let { fileUri ->
             AppInstaller.installFromUri(ctx, fileUri, "Local APK", onStatus)
@@ -164,6 +178,42 @@ fun AppsScreen() {
         selectedAppToInstall = null
     }
 
+    fun refreshUninstallList() {
+        coroutineScope.launch(Dispatchers.IO) {
+            isRefreshingUninstallList = true
+            val targetApps = mapOf(
+                "com.oculus.facebook" to "Facebook",
+                "com.facebook.orca" to "Facebook Messenger",
+                "com.oculus.igvr" to "Instagram",
+                "com.oculus.assistant" to "Meta AI",
+                "com.facebook.horizon" to "Meta Horizon",
+                "com.whatsapp" to "WhatsApp"
+            )
+            val pm = context.packageManager
+            val foundApps = mutableListOf<Triple<String, String, Drawable?>>()
+
+            targetApps.forEach { (pkg, name) ->
+                try {
+                    val appInfo = pm.getApplicationInfo(pkg, 0)
+                    val icon = pm.getApplicationIcon(appInfo)
+                    foundApps.add(Triple(name, pkg, icon))
+                } catch (e: Exception) {
+                }
+            }
+            withContext(Dispatchers.Main) {
+                uninstallableApps = foundApps
+                isRefreshingUninstallList = false
+            }
+        }
+    }
+    
+    // Trigger refresh when toggle is enabled
+    LaunchedEffect(isPreventAutoInstallEnabled) {
+        if (isPreventAutoInstallEnabled) {
+            refreshUninstallList()
+        }
+    }
+
     // State for Dogfood Hub feature
     var showRestartDialog by remember { mutableStateOf(false) }
     var restartDialogContent by remember { mutableStateOf<Pair<String, () -> Unit>>(Pair("", {})) }
@@ -214,7 +264,7 @@ fun AppsScreen() {
             )
         }
     ) { innerPadding ->
-        val tabTitles = listOf("Launch", "Install")
+        val tabTitles = listOf("Launch", "Install", "Uninstall")
         val initialAppPage = sharedPrefs.getInt("last_app_tab", 0)
         val pagerState = rememberPagerState(
             initialPage = initialAppPage,
@@ -355,6 +405,83 @@ fun AppsScreen() {
                                         enabled = !isInstalling
                                     ) {
                                         Text(buttonText)
+                                    }
+                                }
+                            }
+                        }
+
+                        2 -> {
+                            item {
+                                AppCard(
+                                    title = "Prevent Auto-Installs",
+                                    description = "Stops the auto installation of default meta apps."
+                                ) {
+                                    Switch(
+                                        checked = isPreventAutoInstallEnabled,
+                                        onCheckedChange = { isEnabled ->
+                                            isPreventAutoInstallEnabled = isEnabled
+                                            sharedPrefs.edit().putBoolean("prevent_auto_install", isEnabled).apply()
+                                            
+                                            coroutineScope.launch(Dispatchers.IO) {
+                                                if (isEnabled) {
+                                                    RootUtils.runAsRoot(LaunchCommands.DISABLE_AUTO_INSTALL_SERVICES)
+                                                    refreshUninstallList()
+                                                } else {
+                                                    RootUtils.runAsRoot(LaunchCommands.ENABLE_AUTO_INSTALL_SERVICES)
+                                                    withContext(Dispatchers.Main) {
+                                                        uninstallableApps = emptyList()
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    )
+                                }
+                            }
+                            
+                            if (isPreventAutoInstallEnabled) {
+                                if (uninstallableApps.isEmpty() && !isRefreshingUninstallList) {
+                                    item {
+                                        Box(modifier = Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
+                                            Text("No default apps found to uninstall.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        }
+                                    }
+                                } else {
+                                    items(uninstallableApps) { (name, pkg, icon) ->
+                                        Card(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                                            Row(
+                                                modifier = Modifier.padding(16.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                if (icon != null) {
+                                                    DrawableImage(
+                                                        drawable = icon,
+                                                        contentDescription = name,
+                                                        modifier = Modifier.size(40.dp)
+                                                    )
+                                                } else {
+                                                    Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(40.dp))
+                                                }
+                                                
+                                                Spacer(modifier = Modifier.width(16.dp))
+                                                
+                                                Column(modifier = Modifier.weight(1f)) {
+                                                    Text(text = name, style = MaterialTheme.typography.titleMedium)
+                                                    Text(text = pkg, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                                }
+                                                
+                                                Button(
+                                                    onClick = {
+                                                        coroutineScope.launch(Dispatchers.IO) {
+                                                            RootUtils.runAsRoot("pm uninstall --user 0 $pkg")
+                                                            refreshUninstallList()
+                                                        }
+                                                    },
+                                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                                                ) {
+                                                    Text("Uninstall")
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -576,6 +703,24 @@ object LaunchCommands {
     const val LAUNCH_DOGFOOD_HUB = "am start com.oculus.vrshell/com.oculus.panelapp.dogfood.DogfoodMainActivity"
     const val LAUNCH_ANDROID_SETTINGS = "am start -n com.android.settings/.Settings"
     const val LAUNCH_FILE_MANAGER = "am start -n com.android.documentsui/.files.FilesActivity"
+    
+    const val DISABLE_AUTO_INSTALL_SERVICES = """
+        setprop persist.ocms.post_nux_default_apps_install_enabled 0
+        am force-stop com.oculus.ocms
+        pm disable com.oculus.ocms/com.oculus.ocms.defaultapps.DefaultAppsNuxOtaReceiver
+        pm disable com.oculus.ocms/com.oculus.ocms.updates.auto.AutoUpdateOnScreenOffAlarmReceiver
+        pm disable com.oculus.ocms/com.oculus.ocms.installer2.service.Installer2StatusReceiver
+        pm disable com.oculus.ocms/com.oculus.ocms.library.service.BinaryCheckUpdateIntentService
+    """
+    
+    const val ENABLE_AUTO_INSTALL_SERVICES = """
+        setprop persist.ocms.post_nux_default_apps_install_enabled 1
+        am force-stop com.oculus.ocms
+        pm enable com.oculus.ocms/com.oculus.ocms.defaultapps.DefaultAppsNuxOtaReceiver
+        pm enable com.oculus.ocms/com.oculus.ocms.updates.auto.AutoUpdateOnScreenOffAlarmReceiver
+        pm enable com.oculus.ocms/com.oculus.ocms.installer2.service.Installer2StatusReceiver
+        pm enable com.oculus.ocms/com.oculus.ocms.library.service.BinaryCheckUpdateIntentService
+    """
 }
 
 @Preview(showBackground = true, heightDp = 600)
