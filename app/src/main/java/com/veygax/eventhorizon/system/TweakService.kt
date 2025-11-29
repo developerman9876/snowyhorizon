@@ -34,6 +34,7 @@ class TweakService : Service() {
             #!/system/bin/sh
             TARGET_EXPLORE_ACTIVITY="com.oculus.explore/.ExploreActivity"
             TARGET_CONNECTIONS_ACTIVITY="com.oculus.socialplatform/com.oculus.panelapp.people.PeopleShelfActivity"
+            TARGET_EVENTS_ACTIVITY="com.oculus.explore/.EventsActivity"
 
             logcat -c
             logcat -T 0 ActivityTaskManager:D *:S | while read -r line; do
@@ -45,6 +46,10 @@ class TweakService : Service() {
                     *"START u0"*cmp=${'$'}TARGET_CONNECTIONS_ACTIVITY*)
                         pm disable "${'$'}TARGET_CONNECTIONS_ACTIVITY"
                         pm enable "${'$'}TARGET_CONNECTIONS_ACTIVITY"
+                        ;;
+                    *"START u0"*cmp=${'$'}TARGET_EVENTS_ACTIVITY*)
+                        pm disable "${'$'}TARGET_EVENTS_ACTIVITY"
+                        pm enable "${'$'}TARGET_EVENTS_ACTIVITY"
                         ;;
                 esac
             done
