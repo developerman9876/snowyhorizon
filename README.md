@@ -16,7 +16,7 @@ the root tool for the meta surveillance devices (Quest 3/3s). ROOT ON BOOT
 - Double-Tap Passthrough Fix: Current root exploit breaks Double-Tap to enable passthrough, this fixes that issue
 - Disable Proximity Auto Wake
 - System Hang Fix (Booting with Domain Blocker or a restricted internet connection)
-- Spoof Build Type (For Dogfood & ShellDebug)6
+- Spoof Build Type (For Dogfood & ShellDebug)
 
 > [!CAUTION]
 > No "developers" involved or mentioned with/in this project are responsible for any damage that may occur during, before or after the runtime and installation of the app. "Developers" involved includes but is not limited to, all individuals and organizations mentioned in the code/credits section, @veygax and FreeXR.
