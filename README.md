@@ -2,6 +2,9 @@
 # snowyhorizon
 the root tool for the meta surveillance devices (Quest 3/3s). ROOT ON BOOT
 
+> [!CAUTION]
+> SNOWYHORIZON IS A FORK OF EVENTHORIZON AND MAY NOT WORK AS WELL! snowyhorizon just adds more features, and is still in beta!
+
 # AIO Editions: 
 (Please grant snowyhorizon root access after rooting for most of these to work)
 
