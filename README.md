@@ -1,9 +1,9 @@
 ![eventhorizon icon](https://github.com/veygax/eventhorizon/blob/main/app/src/main/ic_launcher-playstore.png)
-# eventhorizon
+# snowyhorizon
 the root tool for the meta surveillance devices (Quest 3/3s). ROOT ON BOOT
 
 # AIO Editions: 
-(Please grant eventhorizon root access after rooting for most of these to work)
+(Please grant snowyhorizon root access after rooting for most of these to work)
 
 - All "safe root things" tweaks + Custom color selection
 - Internet Kill Switch & Root Domain Blocker
@@ -28,6 +28,7 @@ download the apk from releases and sideload
 - https://github.com/zhuowei/cheese-app for a lot of the app code
 - https://github.com/scottyab/rootbeer for root detection
 - https://github.com/zhuowei/cheese for the exploit backend
+- eventhorizon by veygax
 - adrenaline by Project Zero
 - adreno_user from m-y-mo
 - Freedreno from Mesa
